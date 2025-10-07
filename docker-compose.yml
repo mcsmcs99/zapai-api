@@ -1,0 +1,41 @@
+version: "3.9"
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: zapai-api-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: zapai_api
+      MYSQL_USER: app
+      MYSQL_PASSWORD: app
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./docker/mysql/data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+    command: ["--default-authentication-plugin=mysql_native_password","--character-set-server=utf8mb4","--collation-server=utf8mb4_unicode_ci"]
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zapai-api
+    # Em DEV, sobrescrevemos para instalar dev-deps e rodar nodemon
+    command: sh -c "npm i && npm run dev"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      # ATENÇÃO: host do DB aqui é **mysql** (nome do serviço)
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: zapai_api
+      DB_USER: app
+      DB_PASS: app
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/usr/src/app:cached
+    depends_on:
+      - mysql
+    restart: unless-stopped
