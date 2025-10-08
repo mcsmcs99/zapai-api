@@ -5,6 +5,7 @@ const { verifyToken } = require('../services/jwt');
  */
 module.exports = function auth(required = true) {
   return (req, res, next) => {
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
     const h = req.headers.authorization || '';
     const token = h.startsWith('Bearer ') ? h.slice(7) : null;
 
