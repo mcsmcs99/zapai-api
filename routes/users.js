@@ -5,7 +5,7 @@ const { User } = require('../models');
 // GET /users/admin → retorna o primeiro super_admin
 router.get('/admin', async (req, res, next) => {
   try {
-    const admin = await User.findOne({ where: { type: 'super_admin', status: 1 } });
+    const admin = await User.findOne({ where: { type: 'super_admin', status: 'active' } });
     if (!admin) return res.status(404).json({ message: 'Super admin não encontrado' });
     res.json(admin); // defaultScope já exclui password
   } catch (err) {
