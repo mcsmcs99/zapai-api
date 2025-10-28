@@ -31,6 +31,7 @@ module.exports = (sequelize, DataTypes) => {
       name: { type: DataTypes.STRING(120), allowNull: false },
       email: { type: DataTypes.STRING(160), allowNull: false, unique: true, validate: { isEmail: true } },
       password: { type: DataTypes.STRING(255), allowNull: false },
+      token_verification: { type: DataTypes.STRING(255), defaultValue: null },
       type: {
         type: DataTypes.ENUM('super_admin','owner','admin','operational','final_customer'),
         allowNull: false
