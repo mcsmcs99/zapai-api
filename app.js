@@ -8,6 +8,7 @@ var indexRouter = require('./routes/index');
 var usersRouter = require('./routes/users');
 var authRouter = require('./routes/auth');
 var healthRouter = require('./routes/health');
+var plansRoutes = require('./routes/plans');
 
 var app = express();
 
@@ -42,6 +43,10 @@ app.use('/users', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204); // preflight ok
   return next();
 }, auth(true), usersRouter);
+app.use('/plans', (req, res, next) => {
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}, auth(true), plansRoutes);
 
 app.use('/health', healthRouter);
 app.use('/auth', authRouter);
