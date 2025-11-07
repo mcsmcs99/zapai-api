@@ -38,7 +38,7 @@ module.exports = (sequelize, DataTypes) => {
       link_instagram: { type: DataTypes.STRING(255), allowNull: true },
       link_facebook: { type: DataTypes.STRING(255), allowNull: true },
       link_whatsapp: { type: DataTypes.STRING(255), allowNull: true },
-      tenant_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
+      tenant_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       status: {
         type: DataTypes.ENUM('active','inactive','removed','canceled'),
         allowNull: false,

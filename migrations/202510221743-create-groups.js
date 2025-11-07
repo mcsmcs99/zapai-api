@@ -29,10 +29,10 @@ module.exports = {
       // FK → tenants.id
       tenant_id: {
         type: Sequelize.INTEGER.UNSIGNED,
-        allowNull: false,
+        allowNull: true,
         references: { model: 'tenants', key: 'id' },
         onUpdate: 'CASCADE',
-        onDelete: 'RESTRICT' // ou 'CASCADE' se quiser apagar grupos junto com o tenant
+        onDelete: 'CASCADE' // ou 'CASCADE' se quiser apagar grupos junto com o tenant
       },
 
       status: {
