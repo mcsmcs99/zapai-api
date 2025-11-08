@@ -1,4 +1,3 @@
-// src/lib/mysql-provisioner.js
 const mysql = require('mysql2/promise');
 
 let pool;
@@ -16,9 +15,26 @@ function getAdminPool () {
 }
 
 async function createDatabaseIfNotExists (dbName) {
-  const sql = `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`;
+  const sql = `CREATE DATABASE IF NOT EXISTS \`${dbName}\`
+               CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`;
   const pool = getAdminPool();
   await pool.query(sql);
 }
 
-module.exports = { createDatabaseIfNotExists };
+async function grantAllOnDbToApp (dbName) {
+  const user = process.env.DB_USER || 'app';
+  const host = '%';
+  const pool = getAdminPool();
+  await pool.query(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO \`${user}\`@'${host}';`);
+  await pool.query('FLUSH PRIVILEGES;');
+}
+
+/**
+ * Cria o DB do tenant e garante os privilégios do usuário de aplicação.
+ */
+async function ensureTenantDb (dbName) {
+  await createDatabaseIfNotExists(dbName);
+  await grantAllOnDbToApp(dbName);
+}
+
+module.exports = { createDatabaseIfNotExists, grantAllOnDbToApp, ensureTenantDb };

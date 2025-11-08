@@ -26,5 +26,11 @@ docker compose up -d --build
 # 4) Rodar migrations DENTRO do container da API
 docker compose exec api npx sequelize-cli db:migrate
 
-# 5) (Opcional) Rodar seeders DENTRO do container
+# 5) Rodar seeders DENTRO do container
 docker compose exec api npx sequelize-cli db:seed:all
+
+# 6) Rodar tenants migrations DENTRO do container da API
+docker compose exec api node scripts/tenant/tenantMigrations.js migrate
+
+# 7) Rodar tenants seeders DENTRO do container
+docker compose exec api node scripts/tenant/tenantMigrations.js seed

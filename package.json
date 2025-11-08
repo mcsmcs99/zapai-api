@@ -7,7 +7,10 @@
     "dev": "nodemon ./bin/www",
     "db:migrate": "sequelize-cli db:migrate",
     "db:seed": "sequelize-cli db:seed:all",
-    "db:undo": "sequelize-cli db:migrate:undo:all"
+    "db:undo": "sequelize-cli db:migrate:undo:all",
+    "tenant:migrate": "node scripts/tenant/tenantMigrations.js migrate",
+    "tenant:seed": "node scripts/tenant/tenantMigrations.js seed",
+    "tenant:undo": "node scripts/tenant/tenantMigrations.js undo"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
