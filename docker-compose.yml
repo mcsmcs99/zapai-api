@@ -32,6 +32,9 @@ services:
       DB_NAME: zapai_api
       DB_USER: app
       DB_PASS: app
+      DB_ADMIN_HOST: mysql
+      DB_ADMIN_USER: root
+      DB_ADMIN_PASS: root
     ports:
       - "3000:3000"
     volumes:
