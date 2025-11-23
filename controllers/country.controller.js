@@ -15,43 +15,44 @@ exports.list = async (req, res, next) => {
       status = 'active',
       q = '',
       page = 1,
-      pageSize = 20,
+      pageSize,
       order = 'name',
       dir = 'asc'
-    } = req.query || {};
+    } = req.query || {}
 
-    const where = {};
-    if (status) where.status = status; // por padrão só ativos
-    if (q) where.name = { [Op.like]: `%${q}%` };
+    const where = {}
+    if (status) where.status = status
+    if (q) where.name = { [Op.like]: `%${q}%` }
 
-    const limit = Math.min(Number(pageSize) || 20, 100);
-    const offset = Math.max((Number(page) || 1) - 1, 0) * limit;
+    // se não vier pageSize, não limita (Sequelize não envia LIMIT)
+    const limit = pageSize ? Number(pageSize) : undefined
+    const currentPage = Number(page) || 1
+    const offset = limit ? Math.max(currentPage - 1, 0) * limit : undefined
 
-    // sanitize ordem
-    const allowedOrder = ['name', 'created_at', 'updated_at'];
-    const safeOrder = allowedOrder.includes(String(order)) ? String(order) : 'name';
-    const safeDir = String(dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    const allowedOrder = ['name', 'created_at', 'updated_at']
+    const safeOrder = allowedOrder.includes(String(order)) ? String(order) : 'name'
+    const safeDir = String(dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC'
 
     const { rows, count } = await Country.findAndCountAll({
       where,
       limit,
       offset,
       order: [[safeOrder, safeDir]]
-    });
+    })
 
     return res.json({
       data: rows,
       pagination: {
         total: count,
-        page: Number(page) || 1,
-        pageSize: limit,
-        pages: Math.ceil(count / limit) || 1
+        page: currentPage,
+        pageSize: limit || count,
+        pages: limit ? Math.ceil(count / limit) || 1 : 1
       }
-    });
+    })
   } catch (err) {
-    next(err);
+    next(err)
   }
-};
+}
 
 // GET /countries/:idOrName  (aceita id numérico ou name)
 exports.getOne = async (req, res, next) => {
