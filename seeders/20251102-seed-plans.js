@@ -7,12 +7,18 @@ module.exports = {
 
     const rows = [
       {
+        id: 1,
         unique_key : uuidv4(),
         name       : 'Plano Básico',
-        price      : 49.9,
+        price      : 0,
         status     : 'active',
-        assistants : 5,
+        assistants : 3,
         messages   : 500,
+        plans_payment_methods: JSON.stringify({
+          credit_card: true,
+          pix: false,
+          billet: false
+        }),
         created_by : null,
         created_at : now,
         updated_by : null,
@@ -21,26 +27,38 @@ module.exports = {
         deleted_at : null
       },
       {
+        id: 2,
         unique_key : uuidv4(),
         name       : 'Plano Profissional',
+        price      : 49.9,
+        status     : 'active',
+        assistants : 5,
+        messages   : 1000,
+        plans_payment_methods: JSON.stringify({
+          credit_card: true,
+          pix: true,
+          billet: true
+        }),
+        created_by : null,
+        created_at : now,
+        updated_by : null,
+        updated_at : now,
+        deleted_by : null,
+        deleted_at : null
+      },
+      {
+        id: 3,
+        unique_key : uuidv4(),
+        name       : 'Plano Enterprise',
         price      : 99.9,
         status     : 'active',
         assistants : 10,
         messages   : 2500,
-        created_by : null,
-        created_at : now,
-        updated_by : null,
-        updated_at : now,
-        deleted_by : null,
-        deleted_at : null
-      },
-      {
-        unique_key : uuidv4(),
-        name       : 'Plano Enterprise',
-        price      : 0,
-        status     : 'active',
-        assistants : 1,
-        messages   : 50,
+        plans_payment_methods: JSON.stringify({
+          credit_card: true,
+          pix: true,
+          billet: true
+        }),
         created_by : null,
         created_at : now,
         updated_by : null,

@@ -31,6 +31,13 @@ module.exports = (sequelize, DataTypes) => {
 
       messages: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0 },
 
+      // formas de pagamento permitidas para o plano
+      plans_payment_methods: {
+        type: DataTypes.JSON,
+        allowNull: true,          // pode ficar null e você trata no código
+        defaultValue: null
+      },
+
       // auditoria (FKs opcionais)
       created_by: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       updated_by: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
@@ -38,10 +45,10 @@ module.exports = (sequelize, DataTypes) => {
     },
     {
       sequelize,
-      modelName: 'Plan',           // importante para ficar disponível como db.Plan
+      modelName: 'Plan',
       tableName: 'plans',
-      underscored: true,           // created_at, updated_at, deleted_at
-      paranoid: true,              // usa deleted_at
+      underscored: true,
+      paranoid: true,
       createdAt: 'created_at',
       updatedAt: 'updated_at',
       deletedAt: 'deleted_at'
