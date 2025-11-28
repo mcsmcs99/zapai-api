@@ -7,6 +7,9 @@ module.exports = (sequelize, DataTypes) => {
       // Pertence a um tenant
       Group.belongsTo(models.Tenant, { foreignKey: 'tenant_id', as: 'tenant' });
 
+      // País (country)
+      Group.belongsTo(models.Country, { foreignKey: 'country_id', as: 'country' });
+
       // N:N com users via pivot
       Group.belongsToMany(models.User, {
         through: models.UsersGroup,
@@ -39,6 +42,7 @@ module.exports = (sequelize, DataTypes) => {
       link_facebook: { type: DataTypes.STRING(255), allowNull: true },
       link_whatsapp: { type: DataTypes.STRING(255), allowNull: true },
       tenant_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+      country_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       status: {
         type: DataTypes.ENUM('active','inactive','removed','canceled'),
         allowNull: false,

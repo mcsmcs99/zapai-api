@@ -184,6 +184,7 @@ exports.saveCompany = async (req, res, next) => {
         link_instagram: company.link_instagram || null,
         link_facebook: company.link_facebook || null,
         link_whatsapp: company.link_whatsapp || null,
+        country_id: company.country_id || null,
         status: company.status || group.status,
         updated_by: userId
       }, { transaction: t })
@@ -203,6 +204,7 @@ exports.saveCompany = async (req, res, next) => {
         link_instagram: company.link_instagram || null,
         link_facebook: company.link_facebook || null,
         link_whatsapp: company.link_whatsapp || null,
+        country_id: company.country_id || null,
         tenant_id: null,
         status: company.status || 'active',
         created_by: userId
