@@ -9,6 +9,7 @@ var usersRouter = require('./routes/users');
 var authRouter = require('./routes/auth');
 var healthRouter = require('./routes/health');
 var plansRoutes = require('./routes/plans');
+var groupsRoutes = require('./routes/groups');
 const countriesRoutes = require('./routes/countries');
 var onboardingRoutes = require('./routes/onboarding');
 
@@ -49,6 +50,10 @@ app.use('/plans', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
 }, auth(true), plansRoutes);
+app.use('/groups', (req, res, next) => {
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}, auth(true), groupsRoutes);
 app.use('/countries', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();

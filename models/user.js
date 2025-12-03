@@ -15,6 +15,12 @@ module.exports = (sequelize, DataTypes) => {
       // Acesso direto ao pivot
       User.hasMany(models.UsersGroup, { foreignKey: 'user_id', as: 'memberships' });
 
+      // Grupo atual (FK para groups.id)
+      User.belongsTo(models.Group, {
+        foreignKey: 'current_group_id',
+        as: 'currentGroup'
+      });
+
       // Auditoria
       User.belongsTo(models.User, { foreignKey: 'created_by', as: 'createdBy' });
       User.belongsTo(models.User, { foreignKey: 'updated_by', as: 'updatedBy' });
@@ -42,6 +48,14 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 'active'
       },
       token_expired: { type: DataTypes.DATE, allowNull: true },
+
+      // FK para groups.id
+      current_group_id: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        defaultValue: null
+      },
+
       created_by: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       updated_by: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
       deleted_by: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true }
