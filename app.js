@@ -4,14 +4,18 @@ var cookieParser = require('cookie-parser');
 var logger = require('morgan');
 var cors = require('cors'); // << ADICIONE
 
-var indexRouter = require('./routes/index');
-var usersRouter = require('./routes/users');
-var authRouter = require('./routes/auth');
-var healthRouter = require('./routes/health');
-var plansRoutes = require('./routes/plans');
-var groupsRoutes = require('./routes/groups');
+// Routes principal base
+const indexRouter = require('./routes/index');
+const usersRouter = require('./routes/users');
+const authRouter = require('./routes/auth');
+const healthRouter = require('./routes/health');
+const plansRoutes = require('./routes/plans');
+const groupsRoutes = require('./routes/groups');
 const countriesRoutes = require('./routes/countries');
-var onboardingRoutes = require('./routes/onboarding');
+const onboardingRoutes = require('./routes/onboarding');
+
+// Routes tenant base
+const tenantStaffRoutes = require('./routes/tenant/staff');
 
 var app = express();
 
@@ -42,6 +46,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/', indexRouter);
 
 // IMPORTANTE: se seu middleware `auth` barra OPTIONS, libere o preflight:
+// Routes principal base
 app.use('/users', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204); // preflight ok
   return next();
@@ -65,5 +70,12 @@ app.use('/onboarding', (req, res, next) => {
 
 app.use('/health', healthRouter);
 app.use('/auth', authRouter);
+
+// Routes tenant base
+app.use('/tenant/staff', (req, res, next) => {
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}, auth(true), tenantStaffRoutes);
+
 
 module.exports = app;
