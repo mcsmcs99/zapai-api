@@ -59,6 +59,55 @@ module.exports = {
   },
 
   /**
+   * PATCH /users/:id
+   * Atualiza dados do perfil do usuário (nome, tipo, status, etc.)
+   */
+  async updateProfile (req, res, next) {
+    try {
+      const { id } = req.params
+
+      const user = await User.findByPk(id)
+
+      if (!user) {
+        return res.status(404).json({ message: 'Usuário não encontrado' })
+      }
+
+      // Campos permitidos para atualização
+      const {
+        name,
+        type,
+        status
+        // phone // <- se você criar esse campo na tabela users, pode incluir aqui
+      } = req.body
+
+      // Atualiza apenas o que foi enviado (PATCH parcial)
+      if (typeof name !== 'undefined') {
+        user.name = name
+      }
+
+      if (typeof type !== 'undefined') {
+        user.type = type
+      }
+
+      if (typeof status !== 'undefined') {
+        user.status = status
+      }
+
+      // Se depois você adicionar coluna phone no model:
+      // if (typeof phone !== 'undefined') {
+      //   user.phone = phone
+      // }
+
+      await user.save()
+
+      // defaultScope já exclui password
+      return res.json(user)
+    } catch (err) {
+      return next(err)
+    }
+  },
+
+  /**
    * GET /users/:id
    * Retorna um usuário por id
    */

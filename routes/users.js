@@ -12,6 +12,9 @@ router.get('/admin', UsersCtrl.getAdmin)
 // PATCH /users/:id/current-group → atualiza o current_group_id do usuário
 router.patch('/:id/current-group', UsersCtrl.updateCurrentGroup)
 
+// PATCH /users/:id → atualiza dados do perfil do usuário
+router.patch('/:id', UsersCtrl.updateProfile)
+
 // GET /users/:id → retorna um usuário por id
 router.get('/:id', UsersCtrl.getById)
 
