@@ -2,6 +2,7 @@
 'use strict'
 
 const { User } = require('../models')
+const bcrypt = require('bcryptjs')
 
 module.exports = {
   /**
@@ -77,7 +78,6 @@ module.exports = {
         name,
         type,
         status
-        // phone // <- se você criar esse campo na tabela users, pode incluir aqui
       } = req.body
 
       // Atualiza apenas o que foi enviado (PATCH parcial)
@@ -93,15 +93,51 @@ module.exports = {
         user.status = status
       }
 
-      // Se depois você adicionar coluna phone no model:
-      // if (typeof phone !== 'undefined') {
-      //   user.phone = phone
-      // }
-
       await user.save()
 
       // defaultScope já exclui password
       return res.json(user)
+    } catch (err) {
+      return next(err)
+    }
+  },
+
+  /**
+   * PATCH /users/:id/password
+   * Altera a senha do usuário (validando a senha atual)
+   */
+  async changePassword (req, res, next) {
+    try {
+      const { id } = req.params
+      const { current_password, new_password } = req.body
+
+      if (!current_password || !new_password) {
+        return res.status(400).json({
+          message: 'Campos current_password e new_password são obrigatórios.'
+        })
+      }
+
+      // Precisamos do campo password, então usamos o scope withPassword
+      const user = await User.scope('withPassword').findByPk(id)
+
+      if (!user) {
+        return res.status(404).json({ message: 'Usuário não encontrado' })
+      }
+
+      // Confere a senha atual
+      const isValid = await bcrypt.compare(current_password, user.password)
+      if (!isValid) {
+        return res.status(400).json({ message: 'Senha atual inválida.' })
+      }
+
+      // Gera o hash da nova senha
+      const hashed = await bcrypt.hash(new_password, 10)
+      user.password = hashed
+      await user.save()
+
+      // Opcional: retornar apenas uma mensagem
+      return res.json({ message: 'Senha alterada com sucesso.' })
+
     } catch (err) {
       return next(err)
     }
