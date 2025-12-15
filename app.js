@@ -17,6 +17,7 @@ const onboardingRoutes = require('./routes/onboarding');
 // Routes tenant base
 const tenantStaffRoutes = require('./routes/tenant/staff');
 const tenantServiceRoutes = require('./routes/tenant/services');
+const tenantAppointmentRoutes = require('./routes/tenant/appointments');
 
 var app = express();
 
@@ -81,5 +82,9 @@ app.use('/tenant/services', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
 }, auth(true), tenantServiceRoutes);
+app.use('/tenant/appointments', (req, res, next) => {
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}, auth(true), tenantAppointmentRoutes);
 
 module.exports = app;
