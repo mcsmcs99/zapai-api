@@ -22,6 +22,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: false
     },
+    customer_name: {
+      type: DataTypes.STRING(150),
+      allowNull: true
+    },
     customer_id: {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: true

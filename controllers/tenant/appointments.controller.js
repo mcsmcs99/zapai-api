@@ -232,11 +232,11 @@ module.exports = {
 
       const newRow = await Appointment.create({
         unique_key: randomUUID(),
-        service_id: payload.service_id,
-        collaborator_id: payload.collaborator_id,
+        service_id: Number(payload.service_id),
+        collaborator_id: Number(payload.collaborator_id),
 
-        // ✅ opcional
         customer_id: payload.customer_id ?? null,
+        customer_name: payload.customer_name ? String(payload.customer_name).trim() : null,
 
         date: dateISO,
         start: payload.start,
@@ -285,12 +285,17 @@ module.exports = {
         return res.status(404).json({ message: 'Agendamento não encontrado.' })
       }
 
-      if (payload.service_id != null) row.service_id = payload.service_id
-      if (payload.collaborator_id != null) row.collaborator_id = payload.collaborator_id
+      if (payload.service_id != null) row.service_id = Number(payload.service_id)
+      if (payload.collaborator_id != null) row.collaborator_id = Number(payload.collaborator_id)
 
-      // ✅ opcional e permite limpar (enviar null)
       if (payload.customer_id !== undefined) {
         row.customer_id = payload.customer_id ?? null
+      }
+
+      if (payload.customer_name !== undefined) {
+        row.customer_name = payload.customer_name
+          ? String(payload.customer_name).trim()
+          : null
       }
 
       if (payload.date) {
@@ -301,9 +306,15 @@ module.exports = {
         row.date = dateISO
       }
 
-      if (payload.start) row.start = payload.start
-      if (payload.end) row.end = payload.end
-      if (payload.price != null) row.price = payload.price
+      if (!payload.start || !/^\d{2}:\d{2}$/.test(payload.start)) {
+        return res.status(400).json({ message: 'start inválido. Use HH:mm.' })
+      }
+
+      if (!payload.end || !/^\d{2}:\d{2}$/.test(payload.end)) {
+        return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
+      }
+
+      if (payload.price != null) row.price = Number(payload.price ?? 0)
 
       if (payload.status) {
         row.status = payload.status
