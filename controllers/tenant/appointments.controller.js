@@ -65,6 +65,43 @@ const toISODate = (v) => {
   return `${y}-${m}-${dd}`
 }
 
+async function assertNoScheduleConflict ({
+  Appointment,
+  dateISO,
+  collaboratorId,
+  start,
+  end,
+  ignoreId = null
+}) {
+  // condição de overlap: existing.start < newEnd AND existing.end > newStart
+  const where = {
+    date: dateISO,
+    collaborator_id: Number(collaboratorId),
+    status: { [Op.ne]: 'cancelled' },
+    start: { [Op.lt]: end },
+    end: { [Op.gt]: start }
+  }
+
+  if (ignoreId) {
+    where.id = { [Op.ne]: Number(ignoreId) }
+  }
+
+  const conflict = await Appointment.findOne({
+    where,
+    attributes: ['id', 'date', 'start', 'end', 'status', 'service_id', 'collaborator_id'],
+    order: [['id', 'DESC']]
+  })
+
+  if (conflict) {
+    const err = new Error(
+      `Conflito de agenda: colaborador já possui agendamento entre ${conflict.start} e ${conflict.end} em ${conflict.date}.`
+    )
+    err.statusCode = 409
+    err.conflict = conflict
+    throw err
+  }
+}
+
 // --------------------------------------------------------------------------
 // Controller
 // --------------------------------------------------------------------------
@@ -230,6 +267,18 @@ module.exports = {
         return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
       }
 
+      const statusToSave = payload.status || 'pending'
+
+      if (statusToSave !== 'cancelled') {
+        await assertNoScheduleConflict({
+          Appointment,
+          dateISO,
+          collaboratorId: payload.collaborator_id,
+          start: payload.start,
+          end: payload.end
+        })
+      }
+
       const newRow = await Appointment.create({
         unique_key: randomUUID(),
         service_id: Number(payload.service_id),
@@ -250,6 +299,14 @@ module.exports = {
       return res.status(201).json(newRow)
     } catch (err) {
       console.error('Erro ao criar appointment:', err)
+
+      if (err.statusCode === 409) {
+        return res.status(409).json({
+          message: err.message,
+          conflict: err.conflict
+        })
+      }
+
       return res.status(500).json({
         message: 'Erro ao criar agendamento.',
         error: err.message
@@ -326,11 +383,39 @@ module.exports = {
 
       row.updated_by = userId
 
+      // status final que vai ficar no registro (se não vier, mantém o atual)
+      const finalStatus = payload.status ? payload.status : row.status
+
+      // pega os valores finais que serão salvos (se payload trouxe algo, usa payload; senão, usa row)
+      const finalDate = row.date
+      const finalStart = payload.start // no seu código é obrigatório
+      const finalEnd = payload.end     // no seu código é obrigatório
+      const finalCollaboratorId = row.collaborator_id
+
+      if (finalStatus !== 'cancelled') {
+        await assertNoScheduleConflict({
+          Appointment,
+          dateISO: finalDate,
+          collaboratorId: finalCollaboratorId,
+          start: finalStart,
+          end: finalEnd,
+          ignoreId: row.id
+        })
+      }
+
       await row.save()
 
       return res.json(row)
     } catch (err) {
       console.error('Erro ao atualizar appointment:', err)
+
+      if (err.statusCode === 409) {
+        return res.status(409).json({
+          message: err.message,
+          conflict: err.conflict
+        })
+      }
+
       return res.status(500).json({
         message: 'Erro ao atualizar agendamento.',
         error: err.message
