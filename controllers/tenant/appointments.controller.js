@@ -337,22 +337,14 @@ module.exports = {
       const payload = req.body || {}
 
       const row = await Appointment.findByPk(id)
+      if (!row) return res.status(404).json({ message: 'Agendamento não encontrado.' })
 
-      if (!row) {
-        return res.status(404).json({ message: 'Agendamento não encontrado.' })
-      }
-
+      // ✅ atualiza campos da tela
       if (payload.service_id != null) row.service_id = Number(payload.service_id)
       if (payload.collaborator_id != null) row.collaborator_id = Number(payload.collaborator_id)
 
       if (payload.customer_id !== undefined) {
         row.customer_id = payload.customer_id ?? null
-      }
-
-      if (payload.customer_name !== undefined) {
-        row.customer_name = payload.customer_name
-          ? String(payload.customer_name).trim()
-          : null
       }
 
       if (payload.date) {
@@ -366,45 +358,49 @@ module.exports = {
       if (!payload.start || !/^\d{2}:\d{2}$/.test(payload.start)) {
         return res.status(400).json({ message: 'start inválido. Use HH:mm.' })
       }
-
       if (!payload.end || !/^\d{2}:\d{2}$/.test(payload.end)) {
         return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
       }
 
+      row.start = payload.start
+      row.end = payload.end
+
       if (payload.price != null) row.price = Number(payload.price ?? 0)
 
-      if (payload.status) {
-        row.status = payload.status
-      }
+      if (payload.status) row.status = payload.status
 
-      if (payload.notes !== undefined) {
-        row.notes = payload.notes
-      }
+      if (payload.notes !== undefined) row.notes = payload.notes
 
       row.updated_by = userId
 
-      // status final que vai ficar no registro (se não vier, mantém o atual)
-      const finalStatus = payload.status ? payload.status : row.status
-
-      // pega os valores finais que serão salvos (se payload trouxe algo, usa payload; senão, usa row)
-      const finalDate = row.date
-      const finalStart = payload.start // no seu código é obrigatório
-      const finalEnd = payload.end     // no seu código é obrigatório
-      const finalCollaboratorId = row.collaborator_id
-
+      const finalStatus = row.status
       if (finalStatus !== 'cancelled') {
         await assertNoScheduleConflict({
           Appointment,
-          dateISO: finalDate,
-          collaboratorId: finalCollaboratorId,
-          start: finalStart,
-          end: finalEnd,
+          dateISO: row.date,
+          collaboratorId: row.collaborator_id,
+          start: row.start,
+          end: row.end,
           ignoreId: row.id
         })
       }
 
-      await row.save()
+      await row.save({
+        fields: [
+          'service_id',
+          'collaborator_id',
+          'customer_id',
+          'date',
+          'start',
+          'end',
+          'price',
+          'status',
+          'notes',
+          'updated_by'
+        ]
+      })
 
+      await row.reload() // garante retorno do que ficou no banco
       return res.json(row)
     } catch (err) {
       console.error('Erro ao atualizar appointment:', err)
@@ -421,9 +417,7 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
