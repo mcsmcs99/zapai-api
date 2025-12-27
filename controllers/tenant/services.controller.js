@@ -46,6 +46,49 @@ async function getTenantModels (groupId) {
   return { sequelize, Service }
 }
 
+function parseIds (raw) {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw.map(Number).filter(n => Number.isFinite(n))
+
+  if (typeof raw === 'string') {
+    const s = raw.trim()
+    if (!s) return []
+
+    // tenta JSON primeiro
+    try {
+      const j = JSON.parse(s)
+      if (Array.isArray(j)) return j.map(Number).filter(n => Number.isFinite(n))
+    } catch (_) {}
+
+    // fallback CSV
+    return s
+      .split(',')
+      .map(x => Number(String(x).trim()))
+      .filter(n => Number.isFinite(n))
+  }
+
+  return []
+}
+
+function stringifyIds (arr) {
+  const out = (Array.isArray(arr) ? arr : [])
+    .map(Number)
+    .filter(n => Number.isFinite(n))
+
+  // remove duplicados
+  return JSON.stringify([...new Set(out)])
+}
+
+function mapServiceOut (row) {
+  const plain = row?.toJSON ? row.toJSON() : row
+  const collaboratorIds = parseIds(plain?.collaborator_ids ?? plain?.collaboratorIds)
+  // devolve padrão do front
+  return {
+    ...plain,
+    collaboratorIds
+  }
+}
+
 // --------------------------------------------------------------------------
 // Controller
 // --------------------------------------------------------------------------
@@ -91,7 +134,7 @@ module.exports = {
       const totalPages = Math.ceil(count / limit) || 1
 
       return res.json({
-        data: rows,
+        data: rows.map(mapServiceOut),
         meta: {
           total: count,
           page,
@@ -131,7 +174,7 @@ module.exports = {
         return res.status(404).json({ message: 'Serviço não encontrado.' })
       }
 
-      return res.json(service)
+      return res.json(mapServiceOut(service))
     } catch (err) {
       console.error('Erro ao buscar serviço por ID:', err)
       return res.status(500).json({
@@ -154,6 +197,7 @@ module.exports = {
     try {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
+      const collaboratorIds = parseIds(payload.collaboratorIds || payload.collaborator_ids)
 
       const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
       sequelize = tenantSequelize
@@ -166,15 +210,12 @@ module.exports = {
         price: payload.price ?? 0,
         duration: payload.duration ?? 30,
         description: payload.description || null,
-        collaborator_ids:
-          payload.collaboratorIds ||
-          payload.collaborator_ids ||
-          [],
+        collaborator_ids: stringifyIds(collaboratorIds),
         status: payload.status || 'active',
         created_by: userId
       })
 
-      return res.status(201).json(newService)
+      return res.status(201).json(mapServiceOut(newService))
     } catch (err) {
       console.error('Erro ao criar serviço:', err)
       return res.status(500).json({
@@ -219,9 +260,9 @@ module.exports = {
       }
       service.description = payload.description ?? service.description
 
-      if (payload.collaboratorIds || payload.collaborator_ids) {
-        service.collaborator_ids =
-          payload.collaboratorIds || payload.collaborator_ids
+      if (payload.collaboratorIds !== undefined || payload.collaborator_ids !== undefined) {
+        const ids = parseIds(payload.collaboratorIds || payload.collaborator_ids)
+        service.collaborator_ids = stringifyIds(ids)
       }
 
       if (payload.status) {
@@ -232,7 +273,7 @@ module.exports = {
 
       await service.save()
 
-      return res.json(service)
+      return res.json(mapServiceOut(service))
     } catch (err) {
       console.error('Erro ao atualizar serviço:', err)
       return res.status(500).json({
