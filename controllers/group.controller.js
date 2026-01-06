@@ -15,18 +15,14 @@ exports.index = async (req, res) => {
       limit = 20,
       status,
       tenant_id,
-      search
+      search,
+      user_id
     } = req.query
 
     const where = {}
 
-    if (status) {
-      where.status = status
-    }
-
-    if (tenant_id) {
-      where.tenant_id = tenant_id
-    }
+    if (status) where.status = status
+    if (tenant_id) where.tenant_id = tenant_id
 
     if (search) {
       where[Op.or] = [
@@ -37,15 +33,31 @@ exports.index = async (req, res) => {
 
     const offset = (Number(page) - 1) * Number(limit)
 
+    // include base (o que você já tinha)
+    const include = [
+      { model: Tenant, as: 'tenant' },
+      { model: Country, as: 'country' }
+    ]
+
+    // filtro por user_id via tabela pivot (users_groups)
+    if (user_id) {
+      include.push({
+        model: User,
+        as: 'users',              // <-- alias da associação Group <-> User
+        attributes: [],           // não precisa trazer dados do user pra listar groups
+        through: { attributes: [] },
+        where: { id: user_id },   // filtra pelo user_id
+        required: true            // INNER JOIN -> só groups que tenham vínculo
+      })
+    }
+
     const { rows, count } = await Group.findAndCountAll({
       where,
       offset,
       limit: Number(limit),
       order: [['created_at', 'DESC']],
-      include: [
-        { model: Tenant, as: 'tenant' },
-        { model: Country, as: 'country' }
-      ]
+      include,
+      distinct: true // importante quando tem include M:N pra count não duplicar
     })
 
     return res.status(200).json({
