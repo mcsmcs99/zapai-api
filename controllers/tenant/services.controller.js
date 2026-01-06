@@ -197,12 +197,15 @@ module.exports = {
     try {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
-      const collaboratorIds = parseIds(payload.collaboratorIds || payload.collaborator_ids)
+
+      const payload = req.body || {}
+
+      const collaboratorIds = parseIds(
+        payload.collaboratorIds || payload.collaborator_ids
+      )
 
       const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
       sequelize = tenantSequelize
-
-      const payload = req.body || {}
 
       const newService = await Service.create({
         unique_key: randomUUID(),
