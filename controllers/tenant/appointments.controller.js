@@ -3,7 +3,9 @@
 
 const { Sequelize, DataTypes, Op } = require('sequelize')
 const { randomUUID } = require('crypto')
+
 const defineAppointmentModel = require('../../models/tenant/appointment')
+const defineServiceStaffModel = require('../../models/tenant/service_staff')
 
 // --- helper para obter conexão dinâmica ------------------------------------
 /**
@@ -19,29 +21,25 @@ async function getTenantSequelize (groupId) {
 
   const dbName = `zapai_api_${groupId}`
 
-  const sequelize = new Sequelize(
-    dbName,
-    process.env.DB_USER,
-    process.env.DB_PASS,
-    {
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT || 3306,
-      dialect: 'mysql',
-      logging: false,
-      define: { underscored: true }
-    }
-  )
-
-  return sequelize
+  return new Sequelize(dbName, process.env.DB_USER, process.env.DB_PASS, {
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 3306,
+    dialect: 'mysql',
+    logging: false,
+    define: { underscored: true }
+  })
 }
 
 /**
- * Cria a conexão + model Appointment já ligado ao tenant
+ * Cria a conexão + models já ligados ao tenant
  */
 async function getTenantModels (groupId) {
   const sequelize = await getTenantSequelize(groupId)
+
   const Appointment = defineAppointmentModel(sequelize, DataTypes)
-  return { sequelize, Appointment }
+  const ServiceStaff = defineServiceStaffModel(sequelize, DataTypes)
+
+  return { sequelize, Appointment, ServiceStaff }
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -73,7 +71,7 @@ async function assertNoScheduleConflict ({
   end,
   ignoreId = null
 }) {
-  // condição de overlap: existing.start < newEnd AND existing.end > newStart
+  // overlap: existing.start < newEnd AND existing.end > newStart
   const where = {
     date: dateISO,
     collaborator_id: Number(collaboratorId),
@@ -82,9 +80,7 @@ async function assertNoScheduleConflict ({
     end: { [Op.gt]: start }
   }
 
-  if (ignoreId) {
-    where.id = { [Op.ne]: Number(ignoreId) }
-  }
+  if (ignoreId) where.id = { [Op.ne]: Number(ignoreId) }
 
   const conflict = await Appointment.findOne({
     where,
@@ -102,21 +98,53 @@ async function assertNoScheduleConflict ({
   }
 }
 
+/**
+ * ✅ Nova regra: colaborador só pode ser agendado se existir vínculo na pivot service_staff
+ * (status=1 ativo). Isso substitui o antigo "collaborator_ids" no service.
+ */
+async function assertCollaboratorCanDoService ({
+  ServiceStaff,
+  serviceId,
+  staffId,
+  transaction
+}) {
+  const sid = Number(serviceId)
+  const stid = Number(staffId)
+
+  if (!sid) {
+    const err = new Error('service_id é obrigatório.')
+    err.statusCode = 400
+    throw err
+  }
+  if (!stid) {
+    const err = new Error('collaborator_id é obrigatório.')
+    err.statusCode = 400
+    throw err
+  }
+
+  const link = await ServiceStaff.findOne({
+    where: {
+      service_id: sid,
+      staff_id: stid,
+      status: 1
+    },
+    attributes: ['service_id', 'staff_id', 'status'],
+    transaction
+  })
+
+  if (!link) {
+    const err = new Error('Este colaborador não está vinculado a este serviço.')
+    err.statusCode = 400
+    throw err
+  }
+}
+
 // --------------------------------------------------------------------------
 // Controller
 // --------------------------------------------------------------------------
 module.exports = {
   /**
    * GET /tenant/appointments
-   * Lista agendamentos com paginação e filtros
-   *
-   * Query suportada (alinhado com o front):
-   * - page, limit
-   * - status
-   * - search (opcional: por notes ou customer_id numérico)
-   * - collaborator_id (ou collab)
-   * - service_id (ou service)
-   * - from, to (DD/MM/YYYY ou YYYY-MM-DD)
    */
   async list (req, res) {
     let sequelize
@@ -153,12 +181,7 @@ module.exports = {
         const q = String(search).trim()
         if (q) {
           const or = [{ notes: { [Op.like]: `%${q}%` } }]
-
-          // permite buscar por customer_id digitando número
-          if (!Number.isNaN(Number(q))) {
-            or.push({ customer_id: Number(q) })
-          }
-
+          if (!Number.isNaN(Number(q))) or.push({ customer_id: Number(q) })
           where[Op.or] = or
         }
       }
@@ -174,12 +197,7 @@ module.exports = {
 
       return res.json({
         data: rows,
-        meta: {
-          total: count,
-          page,
-          limit,
-          totalPages
-        }
+        meta: { total: count, page, limit, totalPages }
       })
     } catch (err) {
       console.error('Erro ao listar appointments:', err)
@@ -188,15 +206,12 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
   /**
    * GET /tenant/appointments/:id
-   * Retorna um agendamento específico
    */
   async getById (req, res) {
     let sequelize
@@ -205,13 +220,9 @@ module.exports = {
       const { sequelize: tenantSequelize, Appointment } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
-      const id = req.params.id
+      const row = await Appointment.findByPk(req.params.id)
 
-      const row = await Appointment.findByPk(id)
-
-      if (!row) {
-        return res.status(404).json({ message: 'Agendamento não encontrado.' })
-      }
+      if (!row) return res.status(404).json({ message: 'Agendamento não encontrado.' })
 
       return res.json(row)
     } catch (err) {
@@ -221,20 +232,12 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
   /**
    * POST /tenant/appointments
-   * Cria um novo agendamento
-   *
-   * Body:
-   * - service_id, collaborator_id, date(YYYY-MM-DD), start(HH:mm), end(HH:mm)
-   * - customer_id? (opcional)
-   * - price?, status?, notes?
    */
   async create (req, res) {
     let sequelize
@@ -242,12 +245,11 @@ module.exports = {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
 
-      const { sequelize: tenantSequelize, Appointment } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Appointment, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const payload = req.body || {}
 
-      // validações mínimas (customer_id NÃO é obrigatório)
       if (!payload.service_id) {
         return res.status(400).json({ message: 'service_id é obrigatório.' })
       }
@@ -266,6 +268,13 @@ module.exports = {
       if (!payload.end || !/^\d{2}:\d{2}$/.test(payload.end)) {
         return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
       }
+
+      // ✅ valida vínculo na pivot
+      await assertCollaboratorCanDoService({
+        ServiceStaff,
+        serviceId: payload.service_id,
+        staffId: payload.collaborator_id
+      })
 
       const statusToSave = payload.status || 'pending'
 
@@ -291,7 +300,7 @@ module.exports = {
         start: payload.start,
         end: payload.end,
         price: payload.price ?? 0,
-        status: payload.status || 'pending',
+        status: statusToSave,
         notes: payload.notes || null,
         created_by: userId
       })
@@ -300,11 +309,14 @@ module.exports = {
     } catch (err) {
       console.error('Erro ao criar appointment:', err)
 
-      if (err.statusCode === 409) {
-        return res.status(409).json({
-          message: err.message,
-          conflict: err.conflict
-        })
+      const statusCode = err.statusCode || 500
+
+      if (statusCode === 409) {
+        return res.status(409).json({ message: err.message, conflict: err.conflict })
+      }
+
+      if (statusCode === 400 || statusCode === 404) {
+        return res.status(statusCode).json({ message: err.message })
       }
 
       return res.status(500).json({
@@ -312,17 +324,12 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
   /**
    * PUT /tenant/appointments/:id
-   * Atualiza um agendamento existente
-   *
-   * PATCH também pode usar esse mesmo handler
    */
   async update (req, res) {
     let sequelize
@@ -330,21 +337,28 @@ module.exports = {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
 
-      const { sequelize: tenantSequelize, Appointment } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Appointment, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
-      const id = req.params.id
       const payload = req.body || {}
 
-      const row = await Appointment.findByPk(id)
+      const row = await Appointment.findByPk(req.params.id)
       if (!row) return res.status(404).json({ message: 'Agendamento não encontrado.' })
 
-      // ✅ atualiza campos da tela
+      // atualiza campos
       if (payload.service_id != null) row.service_id = Number(payload.service_id)
       if (payload.collaborator_id != null) row.collaborator_id = Number(payload.collaborator_id)
 
-      if (payload.customer_id !== undefined) {
-        row.customer_id = payload.customer_id ?? null
+      // ✅ valida vínculo na pivot com os valores finais
+      await assertCollaboratorCanDoService({
+        ServiceStaff,
+        serviceId: row.service_id,
+        staffId: row.collaborator_id
+      })
+
+      if (payload.customer_id !== undefined) row.customer_id = payload.customer_id ?? null
+      if (payload.customer_name !== undefined) {
+        row.customer_name = payload.customer_name ? String(payload.customer_name).trim() : null
       }
 
       if (payload.date) {
@@ -366,15 +380,12 @@ module.exports = {
       row.end = payload.end
 
       if (payload.price != null) row.price = Number(payload.price ?? 0)
-
       if (payload.status) row.status = payload.status
-
       if (payload.notes !== undefined) row.notes = payload.notes
 
       row.updated_by = userId
 
-      const finalStatus = row.status
-      if (finalStatus !== 'cancelled') {
+      if (row.status !== 'cancelled') {
         await assertNoScheduleConflict({
           Appointment,
           dateISO: row.date,
@@ -390,6 +401,7 @@ module.exports = {
           'service_id',
           'collaborator_id',
           'customer_id',
+          'customer_name',
           'date',
           'start',
           'end',
@@ -400,16 +412,19 @@ module.exports = {
         ]
       })
 
-      await row.reload() // garante retorno do que ficou no banco
+      await row.reload()
       return res.json(row)
     } catch (err) {
       console.error('Erro ao atualizar appointment:', err)
 
-      if (err.statusCode === 409) {
-        return res.status(409).json({
-          message: err.message,
-          conflict: err.conflict
-        })
+      const statusCode = err.statusCode || 500
+
+      if (statusCode === 409) {
+        return res.status(409).json({ message: err.message, conflict: err.conflict })
+      }
+
+      if (statusCode === 400 || statusCode === 404) {
+        return res.status(statusCode).json({ message: err.message })
       }
 
       return res.status(500).json({
@@ -423,7 +438,6 @@ module.exports = {
 
   /**
    * DELETE /tenant/appointments/:id
-   * Remove (soft delete) um agendamento
    */
   async remove (req, res) {
     let sequelize
@@ -434,17 +448,11 @@ module.exports = {
       const { sequelize: tenantSequelize, Appointment } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
-      const id = req.params.id
-
-      const row = await Appointment.findByPk(id)
-
-      if (!row) {
-        return res.status(404).json({ message: 'Agendamento não encontrado.' })
-      }
+      const row = await Appointment.findByPk(req.params.id)
+      if (!row) return res.status(404).json({ message: 'Agendamento não encontrado.' })
 
       row.deleted_by = userId
       await row.save()
-
       await row.destroy()
 
       return res.json({ message: 'Agendamento removido com sucesso.' })
@@ -455,9 +463,7 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   }
 }

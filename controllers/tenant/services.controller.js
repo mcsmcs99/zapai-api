@@ -3,15 +3,11 @@
 
 const { Sequelize, DataTypes, Op } = require('sequelize')
 const { randomUUID } = require('crypto')
+
 const defineServiceModel = require('../../models/tenant/services')
+const defineServiceStaffModel = require('../../models/tenant/service_staff')
 
 // --- helper para obter conexão dinâmica ------------------------------------
-/**
- * Cria uma conexão Sequelize para o banco do tenant:
- *   zapai_api_{groupId}
- *
- * Ajuste as variáveis de ambiente conforme o seu projeto.
- */
 async function getTenantSequelize (groupId) {
   if (!groupId) {
     throw new Error('group_id is required to resolve tenant database.')
@@ -19,31 +15,25 @@ async function getTenantSequelize (groupId) {
 
   const dbName = `zapai_api_${groupId}`
 
-  const sequelize = new Sequelize(
-    dbName,
-    process.env.DB_USER,
-    process.env.DB_PASS,
-    {
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT || 3306,
-      dialect: 'mysql',
-      logging: false,
-      define: {
-        underscored: true
-      }
-    }
-  )
-
-  return sequelize
+  return new Sequelize(dbName, process.env.DB_USER, process.env.DB_PASS, {
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 3306,
+    dialect: 'mysql',
+    logging: false,
+    define: { underscored: true }
+  })
 }
 
 /**
- * Cria a conexão + model Service já ligado ao tenant
+ * Cria a conexão + models ligados ao tenant
  */
 async function getTenantModels (groupId) {
   const sequelize = await getTenantSequelize(groupId)
+
   const Service = defineServiceModel(sequelize, DataTypes)
-  return { sequelize, Service }
+  const ServiceStaff = defineServiceStaffModel(sequelize, DataTypes)
+
+  return { sequelize, Service, ServiceStaff }
 }
 
 function parseIds (raw) {
@@ -70,19 +60,47 @@ function parseIds (raw) {
   return []
 }
 
-function stringifyIds (arr) {
-  const out = (Array.isArray(arr) ? arr : [])
-    .map(Number)
-    .filter(n => Number.isFinite(n))
+async function loadCollaboratorIds (ServiceStaff, serviceId, transaction) {
+  const rows = await ServiceStaff.findAll({
+    where: { service_id: serviceId },
+    attributes: ['staff_id'],
+    transaction
+  })
 
-  // remove duplicados
-  return JSON.stringify([...new Set(out)])
+  return rows.map(r => Number(r.staff_id)).filter(n => Number.isFinite(n))
 }
 
-function mapServiceOut (row) {
+async function syncServiceCollaborators (
+  ServiceStaff,
+  serviceId,
+  collaboratorIds,
+  transaction
+) {
+  // remove vínculos antigos
+  await ServiceStaff.destroy({
+    where: { service_id: serviceId },
+    transaction
+  })
+
+  if (!Array.isArray(collaboratorIds) || collaboratorIds.length === 0) return
+
+  // remove duplicados e inválidos
+  const ids = [...new Set(collaboratorIds.map(Number))].filter(n => Number.isFinite(n))
+
+  if (!ids.length) return
+
+  await ServiceStaff.bulkCreate(
+    ids.map(staffId => ({
+      service_id: serviceId,
+      staff_id: staffId,
+      status: 1
+    })),
+    { transaction }
+  )
+}
+
+function mapServiceOut (row, collaboratorIds = []) {
   const plain = row?.toJSON ? row.toJSON() : row
-  const collaboratorIds = parseIds(plain?.collaborator_ids ?? plain?.collaboratorIds)
-  // devolve padrão do front
   return {
     ...plain,
     collaboratorIds
@@ -97,11 +115,11 @@ module.exports = {
    * GET /services
    * Lista serviços com paginação e filtros
    */
-  async list (req, res, next) {
+  async list (req, res) {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
-      const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const page = Number(req.query.page || 1)
@@ -113,9 +131,7 @@ module.exports = {
 
       const where = {}
 
-      if (status) {
-        where.status = status
-      }
+      if (status) where.status = status
 
       if (search) {
         where[Op.or] = [
@@ -131,16 +147,30 @@ module.exports = {
         order: [['title', 'ASC']]
       })
 
+      // busca collaboratorIds em lote (1 query) e monta map service_id => [staff_id...]
+      const serviceIds = rows.map(r => r.id)
+      let relMap = {}
+
+      if (serviceIds.length) {
+        const rels = await ServiceStaff.findAll({
+          where: { service_id: { [Op.in]: serviceIds } },
+          attributes: ['service_id', 'staff_id']
+        })
+
+        relMap = rels.reduce((acc, r) => {
+          const sid = Number(r.service_id)
+          const stid = Number(r.staff_id)
+          if (!acc[sid]) acc[sid] = []
+          acc[sid].push(stid)
+          return acc
+        }, {})
+      }
+
       const totalPages = Math.ceil(count / limit) || 1
 
       return res.json({
-        data: rows.map(mapServiceOut),
-        meta: {
-          total: count,
-          page,
-          limit,
-          totalPages
-        }
+        data: rows.map(s => mapServiceOut(s, relMap[s.id] || [])),
+        meta: { total: count, page, limit, totalPages }
       })
     } catch (err) {
       console.error('Erro ao listar serviços:', err)
@@ -149,9 +179,7 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
@@ -159,11 +187,11 @@ module.exports = {
    * GET /services/:id
    * Retorna um serviço específico
    */
-  async getById (req, res, next) {
+  async getById (req, res) {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
-      const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const id = req.params.id
@@ -174,7 +202,9 @@ module.exports = {
         return res.status(404).json({ message: 'Serviço não encontrado.' })
       }
 
-      return res.json(mapServiceOut(service))
+      const collaboratorIds = await loadCollaboratorIds(ServiceStaff, service.id)
+
+      return res.json(mapServiceOut(service, collaboratorIds))
     } catch (err) {
       console.error('Erro ao buscar serviço por ID:', err)
       return res.status(500).json({
@@ -182,9 +212,7 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
@@ -192,33 +220,39 @@ module.exports = {
    * POST /services
    * Cria um novo serviço
    */
-  async create (req, res, next) {
+  async create (req, res) {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
-
       const payload = req.body || {}
 
-      const collaboratorIds = parseIds(
-        payload.collaboratorIds || payload.collaborator_ids
-      )
+      const collaboratorIds = parseIds(payload.collaboratorIds || payload.collaborator_ids)
 
-      const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
-      const newService = await Service.create({
-        unique_key: randomUUID(),
-        title: payload.title,
-        price: payload.price ?? 0,
-        duration: payload.duration ?? 30,
-        description: payload.description || null,
-        collaborator_ids: stringifyIds(collaboratorIds),
-        status: payload.status || 'active',
-        created_by: userId
+      const created = await sequelize.transaction(async (t) => {
+        const newService = await Service.create(
+          {
+            unique_key: randomUUID(),
+            title: payload.title,
+            price: payload.price ?? 0,
+            duration: payload.duration ?? 30,
+            description: payload.description || null,
+            status: payload.status || 'active',
+            created_by: userId
+          },
+          { transaction: t }
+        )
+
+        await syncServiceCollaborators(ServiceStaff, newService.id, collaboratorIds, t)
+
+        return newService
       })
 
-      return res.status(201).json(mapServiceOut(newService))
+      // retorna o que o front espera
+      return res.status(201).json(mapServiceOut(created, collaboratorIds))
     } catch (err) {
       console.error('Erro ao criar serviço:', err)
       return res.status(500).json({
@@ -226,9 +260,7 @@ module.exports = {
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
@@ -236,57 +268,65 @@ module.exports = {
    * PUT /services/:id
    * Atualiza um serviço existente
    */
-  async update (req, res, next) {
+  async update (req, res) {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
-
-      const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
-      sequelize = tenantSequelize
-
-      const id = req.params.id
       const payload = req.body || {}
 
-      const service = await Service.findByPk(id)
+      const hasCollaboratorsPatch =
+        payload.collaboratorIds !== undefined || payload.collaborator_ids !== undefined
 
-      if (!service) {
-        return res.status(404).json({ message: 'Serviço não encontrado.' })
-      }
+      const collaboratorIds = hasCollaboratorsPatch
+        ? parseIds(payload.collaboratorIds || payload.collaborator_ids)
+        : null
 
-      service.title = payload.title ?? service.title
-      if (payload.price !== undefined) {
-        service.price = payload.price
-      }
-      if (payload.duration !== undefined) {
-        service.duration = payload.duration
-      }
-      service.description = payload.description ?? service.description
+      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
+      sequelize = tenantSequelize
 
-      if (payload.collaboratorIds !== undefined || payload.collaborator_ids !== undefined) {
-        const ids = parseIds(payload.collaboratorIds || payload.collaborator_ids)
-        service.collaborator_ids = stringifyIds(ids)
-      }
+      const updated = await sequelize.transaction(async (t) => {
+        const service = await Service.findByPk(req.params.id, { transaction: t })
 
-      if (payload.status) {
-        service.status = payload.status
-      }
+        if (!service) {
+          const e = new Error('Serviço não encontrado.')
+          e.statusCode = 404
+          throw e
+        }
 
-      service.updated_by = userId
+        service.title = payload.title ?? service.title
+        if (payload.price !== undefined) service.price = payload.price
+        if (payload.duration !== undefined) service.duration = payload.duration
+        service.description = payload.description ?? service.description
+        if (payload.status) service.status = payload.status
+        service.updated_by = userId
 
-      await service.save()
+        await service.save({ transaction: t })
 
-      return res.json(mapServiceOut(service))
+        if (hasCollaboratorsPatch) {
+          await syncServiceCollaborators(ServiceStaff, service.id, collaboratorIds, t)
+        }
+
+        return service
+      })
+
+      const outCollaboratorIds = hasCollaboratorsPatch
+        ? collaboratorIds
+        : await loadCollaboratorIds(
+            (await getTenantModels(groupId)).ServiceStaff, // fallback: carrega depois sem transação
+            updated.id
+          )
+
+      return res.json(mapServiceOut(updated, outCollaboratorIds || []))
     } catch (err) {
+      const statusCode = err.statusCode || 500
       console.error('Erro ao atualizar serviço:', err)
-      return res.status(500).json({
-        message: 'Erro ao atualizar serviço.',
+      return res.status(statusCode).json({
+        message: statusCode === 404 ? err.message : 'Erro ao atualizar serviço.',
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   },
 
@@ -294,39 +334,50 @@ module.exports = {
    * DELETE /services/:id
    * Remove (soft delete) um serviço
    */
-  async remove (req, res, next) {
+  async remove (req, res) {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
 
-      const { sequelize: tenantSequelize, Service } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const id = req.params.id
 
-      const service = await Service.findByPk(id)
+      const deleted = await sequelize.transaction(async (t) => {
+        const service = await Service.findByPk(id, { transaction: t })
 
-      if (!service) {
-        return res.status(404).json({ message: 'Serviço não encontrado.' })
-      }
+        if (!service) {
+          const e = new Error('Serviço não encontrado.')
+          e.statusCode = 404
+          throw e
+        }
 
-      service.deleted_by = userId
-      await service.save()
+        service.deleted_by = userId
+        await service.save({ transaction: t })
 
-      await service.destroy() // paranoid: true -> soft delete
+        // limpa vínculos (se quiser manter histórico, remova isso e use status=0)
+        await ServiceStaff.destroy({
+          where: { service_id: service.id },
+          transaction: t
+        })
+
+        await service.destroy({ transaction: t }) // paranoid: true -> soft delete
+
+        return service
+      })
 
       return res.json({ message: 'Serviço removido com sucesso.' })
     } catch (err) {
+      const statusCode = err.statusCode || 500
       console.error('Erro ao excluir serviço:', err)
-      return res.status(500).json({
-        message: 'Erro ao excluir serviço.',
+      return res.status(statusCode).json({
+        message: statusCode === 404 ? err.message : 'Erro ao excluir serviço.',
         error: err.message
       })
     } finally {
-      if (sequelize) {
-        await sequelize.close().catch(() => {})
-      }
+      if (sequelize) await sequelize.close().catch(() => {})
     }
   }
 }

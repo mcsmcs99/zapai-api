@@ -84,10 +84,12 @@ module.exports = (sequelize, DataTypes) => {
   });
 
   Staff.associate = function (models) {
-    // Exemplo se quiser amarrar com User depois:
-    // Staff.belongsTo(models.User, { as: 'creator', foreignKey: 'created_by' });
-    // Staff.belongsTo(models.User, { as: 'updater', foreignKey: 'updated_by' });
-    // Staff.belongsTo(models.User, { as: 'deleter', foreignKey: 'deleted_by' });
+    Staff.belongsToMany(models.Service, {
+      through: 'service_staff',
+      foreignKey: 'staff_id',
+      otherKey: 'service_id',
+      as: 'services'
+    })
   };
 
   return Staff;

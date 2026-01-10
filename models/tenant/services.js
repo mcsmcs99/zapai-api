@@ -39,13 +39,6 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
 
-    // JSON com ids de staff que podem executar o serviço: [1, 2, 3]
-    collaborator_ids: {
-      type: DataTypes.JSON,
-      allowNull: false,
-      defaultValue: []
-    },
-
     status: {
       type: DataTypes.ENUM('active', 'inactive'),
       allowNull: false,
@@ -90,6 +83,15 @@ module.exports = (sequelize, DataTypes) => {
     updatedAt: 'updated_at',
     deletedAt: 'deleted_at'
   })
+
+  Service.associate = function (models) {
+    Service.belongsToMany(models.Staff, {
+      through: models.ServiceStaff,
+      foreignKey: 'service_id',
+      otherKey: 'staff_id',
+      as: 'collaborators'
+    })
+  }
 
   return Service
 }
