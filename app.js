@@ -15,6 +15,7 @@ const countriesRoutes = require('./routes/countries');
 const onboardingRoutes = require('./routes/onboarding');
 
 // Routes tenant base
+const tenantUnitRoutes = require('./routes/tenant/units');
 const tenantStaffRoutes = require('./routes/tenant/staff');
 const tenantServiceRoutes = require('./routes/tenant/services');
 const tenantAppointmentRoutes = require('./routes/tenant/appointments');
@@ -74,6 +75,10 @@ app.use('/health', healthRouter);
 app.use('/auth', authRouter);
 
 // Routes tenant base
+app.use('/tenant/units', (req, res, next) => {
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}, auth(true), tenantUnitRoutes);
 app.use('/tenant/staff', (req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
