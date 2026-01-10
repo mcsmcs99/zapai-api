@@ -26,7 +26,7 @@ module.exports = (sequelize, DataTypes) => {
     },
 
     url: {
-      type: DataTypes.STRING(255),
+      type: DataTypes.TEXT,
       allowNull: false
     },
 
@@ -65,7 +65,6 @@ module.exports = (sequelize, DataTypes) => {
     deletedAt: 'deleted_at'
   })
 
-  // associations (opcional, mas recomendado)
   UnitLink.associate = (models) => {
     UnitLink.belongsTo(models.Unit, {
       foreignKey: 'unit_id',
