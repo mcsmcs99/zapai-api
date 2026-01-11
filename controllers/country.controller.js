@@ -1,6 +1,6 @@
-'use strict';
-const { Op } = require('sequelize');
-const { Country } = require('../models'); // certifique-se que existe models/country.js
+'use strict'
+const { Op } = require('sequelize')
+const { Country } = require('../models') // certifique-se que existe models/country.js
 
 // GET /countries
 // Query params:
@@ -37,7 +37,9 @@ exports.list = async (req, res, next) => {
       where,
       limit,
       offset,
-      order: [[safeOrder, safeDir]]
+      order: [[safeOrder, safeDir]],
+      // ✅ mantém o que existe e só garante que iso2 venha no retorno
+      attributes: ['id', 'name', 'iso2', 'status', 'created_at', 'updated_at']
     })
 
     return res.json({
@@ -57,19 +59,24 @@ exports.list = async (req, res, next) => {
 // GET /countries/:idOrName  (aceita id numérico ou name)
 exports.getOne = async (req, res, next) => {
   try {
-    const { idOrName } = req.params || {};
+    const { idOrName } = req.params || {}
 
     const where = /^\d+$/.test(idOrName)
       ? { id: Number(idOrName) }
-      : { name: String(idOrName) }; // aqui é match exato do name
+      : { name: String(idOrName) } // aqui é match exato do name
 
-    const country = await Country.findOne({ where });
+    const country = await Country.findOne({
+      where,
+      // ✅ idem aqui
+      attributes: ['id', 'name', 'iso2', 'status', 'created_at', 'updated_at']
+    })
+
     if (!country) {
-      return res.status(404).json({ message: 'País não encontrado.' });
+      return res.status(404).json({ message: 'País não encontrado.' })
     }
 
-    return res.json({ data: country });
+    return res.json({ data: country })
   } catch (err) {
-    next(err);
+    next(err)
   }
-};
+}

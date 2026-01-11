@@ -1,5 +1,5 @@
-'use strict';
-const { Model } = require('sequelize');
+'use strict'
+const { Model } = require('sequelize')
 
 module.exports = (sequelize, DataTypes) => {
   class Country extends Model {
@@ -24,6 +24,12 @@ module.exports = (sequelize, DataTypes) => {
         unique: true
       },
 
+      iso2: {
+        type: DataTypes.CHAR(2),
+        allowNull: false,
+        unique: true
+      },
+
       status: {
         type: DataTypes.ENUM('active', 'inactive'),
         allowNull: false,
@@ -32,14 +38,14 @@ module.exports = (sequelize, DataTypes) => {
     },
     {
       sequelize,
-      modelName: 'Country',          // ficará disponível como db.Country
+      modelName: 'Country', // ficará disponível como db.Country
       tableName: 'countries',
-      underscored: true,             // created_at, updated_at
-      timestamps: true,              // usa created_at / updated_at
+      underscored: true, // created_at, updated_at
+      timestamps: true, // usa created_at / updated_at
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     }
-  );
+  )
 
-  return Country;
-};
+  return Country
+}
