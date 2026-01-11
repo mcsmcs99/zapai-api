@@ -99,7 +99,7 @@ async function assertNoScheduleConflict ({
 }
 
 /**
- * ✅ Nova regra: colaborador só pode ser agendado se existir vínculo na pivot service_staff
+ * Colaborador só pode ser agendado se existir vínculo na pivot service_staff
  * (status=1 ativo). Isso substitui o antigo "collaborator_ids" no service.
  */
 async function assertCollaboratorCanDoService ({
@@ -143,6 +143,92 @@ async function assertCollaboratorCanDoService ({
 // Controller
 // --------------------------------------------------------------------------
 module.exports = {
+  /**
+   * ✅ NOVO: GET /tenant/appointments/conflicts
+   *
+   * Objetivo: retornar SOMENTE os agendamentos que podem conflitar
+   * com a escolha do usuário no editor.
+   *
+   * Regras:
+   * - filtra APENAS por colaborador (obrigatório)
+   * - filtra por date (obrigatório)
+   * - NÃO filtra por service (de propósito)
+   * - por padrão, ignora cancelados
+   * - aceita exclude_id (pra edição)
+   * - opcionalmente aceita start/end pra filtrar overlaps (mais leve ainda)
+   */
+  async conflicts (req, res) {
+    let sequelize
+    try {
+      const groupId = req.query.group_id || req.body.group_id
+      const { sequelize: tenantSequelize, Appointment } = await getTenantModels(groupId)
+      sequelize = tenantSequelize
+
+      const collaboratorId = Number(req.query.collaborator_id || req.query.collab || 0)
+      if (!Number.isFinite(collaboratorId) || collaboratorId <= 0) {
+        return res.status(400).json({ message: 'collaborator_id é obrigatório.' })
+      }
+
+      const dateISO = toISODate(req.query.date)
+      if (!dateISO) {
+        return res.status(400).json({ message: 'date inválido. Use YYYY-MM-DD (ou DD/MM/YYYY).' })
+      }
+
+      const excludeId = Number(req.query.exclude_id || 0) || null
+
+      // default: não inclui cancelados
+      const includeCancelled = String(req.query.include_cancelled || '').toLowerCase() === 'true'
+
+      // opcional: filtrar overlaps por start/end
+      const start = req.query.start
+      const end = req.query.end
+      const hasTimeRange = start && end && /^\d{2}:\d{2}$/.test(start) && /^\d{2}:\d{2}$/.test(end)
+
+      const where = {
+        date: dateISO,
+        collaborator_id: collaboratorId
+      }
+
+      if (!includeCancelled) {
+        where.status = { [Op.ne]: 'cancelled' }
+      }
+
+      if (excludeId) {
+        where.id = { [Op.ne]: excludeId }
+      }
+
+      // se você passar start/end, traz só overlaps
+      if (hasTimeRange) {
+        where.start = { [Op.lt]: end }
+        where.end = { [Op.gt]: start }
+      }
+
+      // payload leve (pro editor só precisa disso)
+      const rows = await Appointment.findAll({
+        where,
+        attributes: ['id', 'date', 'start', 'end', 'status', 'service_id', 'collaborator_id'],
+        order: [['start', 'ASC']]
+      })
+
+      return res.json({
+        data: rows,
+        meta: {
+          date: dateISO,
+          collaborator_id: collaboratorId,
+          count: rows.length
+        }
+      })
+    } catch (err) {
+      console.error('Erro ao buscar conflitos de appointments:', err)
+      return res.status(500).json({
+        message: 'Erro ao carregar conflitos de agendamentos.',
+        error: err.message
+      })
+    } finally {
+      if (sequelize) await sequelize.close().catch(() => {})
+    }
+  },
+
   /**
    * GET /tenant/appointments
    */
