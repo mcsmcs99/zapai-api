@@ -1,3 +1,4 @@
+// src/controllers/onboarding.controller.js
 'use strict';
 const { Op } = require('sequelize');
 const {
@@ -6,11 +7,10 @@ const {
   UsersGroup,
   GroupsPlanPayment,
   Tenant,
-  User,               // 👈 importar User
+  User,
   sequelize
 } = require('../models');
 
-// uuid (ESM -> import dinâmico para CommonJS)
 async function uuidv4 () {
   const { v4 } = await import('uuid');
   return v4();
@@ -33,13 +33,11 @@ exports.complete = async (req, res, next) => {
 
     const { company, plan, payment } = req.body || {}
 
-    // agora valida usando company.id em vez de group_id separado
     if (!company || !plan || !payment || !company.id) {
       await t.rollback()
       return res.status(400).json({ message: 'Payload inválido.' })
     }
 
-    // Plano
     let foundPlan = null
     if (plan?.id) {
       foundPlan = await Plan.findOne({ where: { id: plan.id, status: 'active' }, transaction: t })
@@ -51,16 +49,14 @@ exports.complete = async (req, res, next) => {
       return res.status(400).json({ message: 'Plano inválido ou inativo.' })
     }
 
-    // Pagamento
     const payType = (payment?.type || 'pix').toLowerCase()
     if (!ALLOWED_PAYMENT.has(payType)) {
       await t.rollback()
       return res.status(400).json({ message: 'Tipo de pagamento inválido.' })
     }
 
-    // 1) Carrega o Group já criado no passo da empresa
     const group = await Group.findOne({
-      where: { id: company.id, created_by: userId }, // 👈 usa company.id como group_id
+      where: { id: company.id, created_by: userId },
       transaction: t
     })
 
@@ -69,7 +65,6 @@ exports.complete = async (req, res, next) => {
       return res.status(400).json({ message: 'Grupo não encontrado para este usuário.' })
     }
 
-    // (Opcional) atualizar algum campo da empresa com o que veio agora
     await group.update({
       company_name: (company.company_name || '').trim(),
       company_fantasy_name: (company.company_fantasy_name || '').trim(),
@@ -79,22 +74,19 @@ exports.complete = async (req, res, next) => {
       link_facebook: company.link_facebook || null,
       link_whatsapp: company.link_whatsapp || null,
       status: company.status || group.status,
+      locale_id: company.locale_id ?? group.locale_id,
+      currency_id: company.currency_id ?? group.currency_id,
       updated_by: userId
     }, { transaction: t })
 
-    // 2) Tenant (db name)
     const dbName = `zapai_api_${group.id}`
     const tenant = await Tenant.create({
       data: dbName,
       created_by: userId
     }, { transaction: t })
 
-    // 3) Atualiza group.tenant_id
     await group.update({ tenant_id: tenant.id, updated_by: userId }, { transaction: t })
 
-    // 4) (UsersGroup já criado lá atrás. Se quiser garantir, pode verificar aqui.)
-
-    // 5) GroupsPlanPayment
     const gpp = await GroupsPlanPayment.create({
       unique_key: await uuidv4(),
       group_id: group.id,
@@ -109,7 +101,6 @@ exports.complete = async (req, res, next) => {
       created_by: userId
     }, { transaction: t })
 
-    // 6) Ativar o usuário
     await User.update(
       { status: 'active', updated_by: userId },
       { where: { id: userId }, transaction: t }
@@ -131,7 +122,6 @@ exports.complete = async (req, res, next) => {
   }
 }
 
-
 exports.saveCompany = async (req, res, next) => {
   const t = await sequelize.transaction()
   try {
@@ -147,7 +137,6 @@ exports.saveCompany = async (req, res, next) => {
       return res.status(400).json({ message: 'Payload inválido.' })
     }
 
-    // validações mínimas
     if (!company.company_name || !company.document_number) {
       await t.rollback()
       return res.status(400).json({
@@ -157,13 +146,9 @@ exports.saveCompany = async (req, res, next) => {
 
     let group
 
-    // SE TIVER ID → ATUALIZA
     if (company.id) {
       group = await Group.findOne({
-        where: {
-          id: company.id,
-          created_by: userId
-        },
+        where: { id: company.id, created_by: userId },
         transaction: t
       })
 
@@ -185,13 +170,12 @@ exports.saveCompany = async (req, res, next) => {
         link_facebook: company.link_facebook || null,
         link_whatsapp: company.link_whatsapp || null,
         country_id: company.country_id || null,
+        locale_id: company.locale_id ?? group.locale_id,
+        currency_id: company.currency_id ?? group.currency_id,
         status: company.status || group.status,
         updated_by: userId
       }, { transaction: t })
 
-      // aqui NÃO recriamos UsersGroup, assumimos que já existe do primeiro save
-
-    // SE NÃO TIVER ID → CRIA
     } else {
       group = await Group.create({
         unique_key: await uuidv4(),
@@ -205,12 +189,13 @@ exports.saveCompany = async (req, res, next) => {
         link_facebook: company.link_facebook || null,
         link_whatsapp: company.link_whatsapp || null,
         country_id: company.country_id || null,
+        locale_id: company.locale_id ?? null,
+        currency_id: company.currency_id ?? null,
         tenant_id: null,
         status: company.status || 'active',
         created_by: userId
       }, { transaction: t })
 
-      // 2) UsersGroup (relacionando o usuário logado ao grupo criado)
       await UsersGroup.create({
         user_id: userId,
         group_id: group.id,

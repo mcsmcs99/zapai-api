@@ -9,4 +9,7 @@ router.get('/', CountryCtrl.list);
 // Detalhe por id OU name
 router.get('/:idOrName', CountryCtrl.getOne);
 
+// Opções por país (locales + currencies)
+router.get('/:countryId/options', CountryCtrl.getOptionsByCountry)
+
 module.exports = router;

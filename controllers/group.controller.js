@@ -1,13 +1,17 @@
 // src/controllers/group.controller.js
-'use strict';
+'use strict'
 
 const { Op } = require('sequelize')
-const { Group, Tenant, Country, UsersGroup, User } = require('../models')
+const {
+  Group,
+  Tenant,
+  Country,
+  UsersGroup,
+  User,
+  Locale,
+  Currency
+} = require('../models')
 
-/**
- * Lista grupos (empresas) com paginação e filtros básicos
- * GET /groups
- */
 exports.index = async (req, res) => {
   try {
     const {
@@ -33,21 +37,22 @@ exports.index = async (req, res) => {
 
     const offset = (Number(page) - 1) * Number(limit)
 
-    // include base (o que você já tinha)
     const include = [
       { model: Tenant, as: 'tenant' },
-      { model: Country, as: 'country' }
+      { model: Country, as: 'country' },
+      // ✅ novas relações
+      { model: Locale, as: 'locale' },
+      { model: Currency, as: 'currency' }
     ]
 
-    // filtro por user_id via tabela pivot (users_groups)
     if (user_id) {
       include.push({
         model: User,
-        as: 'users',              // <-- alias da associação Group <-> User
-        attributes: [],           // não precisa trazer dados do user pra listar groups
+        as: 'users',
+        attributes: [],
         through: { attributes: [] },
-        where: { id: user_id },   // filtra pelo user_id
-        required: true            // INNER JOIN -> só groups que tenham vínculo
+        where: { id: user_id },
+        required: true
       })
     }
 
@@ -57,7 +62,7 @@ exports.index = async (req, res) => {
       limit: Number(limit),
       order: [['created_at', 'DESC']],
       include,
-      distinct: true // importante quando tem include M:N pra count não duplicar
+      distinct: true
     })
 
     return res.status(200).json({
@@ -78,10 +83,6 @@ exports.index = async (req, res) => {
   }
 }
 
-/**
- * Detalhe de um grupo (empresa) por ID
- * GET /groups/:id
- */
 exports.show = async (req, res) => {
   try {
     const { id } = req.params
@@ -90,6 +91,9 @@ exports.show = async (req, res) => {
       include: [
         { model: Tenant, as: 'tenant' },
         { model: Country, as: 'country' },
+        // ✅ novas relações
+        { model: Locale, as: 'locale' },
+        { model: Currency, as: 'currency' },
         {
           model: UsersGroup,
           as: 'memberships',
@@ -112,10 +116,6 @@ exports.show = async (req, res) => {
   }
 }
 
-/**
- * Atualiza um grupo (empresa)
- * PUT/PATCH /groups/:id
- */
 exports.update = async (req, res) => {
   try {
     const { id } = req.params
@@ -137,10 +137,14 @@ exports.update = async (req, res) => {
       link_whatsapp,
       tenant_id,
       country_id,
+      // ✅ troca locale/currency_code por ids
+      locale_id,
+      currency_id,
       status
     } = req.body
 
-    const userId = req.user?.id || null
+    // no teu onboarding você usa req.user.sub, aqui tava req.user.id
+    const userId = req.user?.sub || req.user?.id || null
 
     await group.update({
       document_type: document_type ?? group.document_type,
@@ -154,11 +158,26 @@ exports.update = async (req, res) => {
       link_whatsapp: link_whatsapp ?? group.link_whatsapp,
       tenant_id: tenant_id ?? group.tenant_id,
       country_id: country_id ?? group.country_id,
+
+      // ✅ novos campos
+      locale_id: locale_id ?? group.locale_id,
+      currency_id: currency_id ?? group.currency_id,
+
       status: status ?? group.status,
       updated_by: userId
     })
 
-    return res.status(200).json(group)
+    // opcional: devolve já com relations
+    const refreshed = await Group.findByPk(group.id, {
+      include: [
+        { model: Tenant, as: 'tenant' },
+        { model: Country, as: 'country' },
+        { model: Locale, as: 'locale' },
+        { model: Currency, as: 'currency' }
+      ]
+    })
+
+    return res.status(200).json(refreshed || group)
   } catch (error) {
     console.error('Error updating group:', error)
     return res.status(500).json({
