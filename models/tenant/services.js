@@ -21,6 +21,12 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false
     },
 
+    icon: {
+      type: DataTypes.STRING(80),
+      allowNull: false,
+      defaultValue: 'content_cut'
+    },
+
     price: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,

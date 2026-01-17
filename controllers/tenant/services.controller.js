@@ -62,6 +62,13 @@ function parseIds (raw) {
   return []
 }
 
+// ✅ NEW: normaliza o ícone (garante string válida e fallback)
+function normalizeIcon (icon) {
+  return typeof icon === 'string' && icon.trim()
+    ? icon.trim()
+    : 'content_cut'
+}
+
 async function loadCollaboratorIds (ServiceStaff, serviceId, transaction) {
   const rows = await ServiceStaff.findAll({
     where: { service_id: serviceId },
@@ -143,6 +150,8 @@ function mapServiceOut (row, collaboratorIds = [], unitIds = []) {
   const plain = row?.toJSON ? row.toJSON() : row
   return {
     ...plain,
+    // ✅ NEW: fallback defensivo caso algum registro antigo venha sem icon
+    icon: plain?.icon || 'content_cut',
     collaboratorIds,
     unitIds
   }
@@ -289,6 +298,9 @@ module.exports = {
       const collaboratorIds = parseIds(payload.collaboratorIds || payload.collaborator_ids)
       const unitIds = parseIds(payload.unitIds || payload.unit_ids)
 
+      // ✅ NEW
+      const icon = normalizeIcon(payload.icon)
+
       const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
         await getTenantModels(groupId)
       sequelize = tenantSequelize
@@ -298,6 +310,7 @@ module.exports = {
           {
             unique_key: randomUUID(),
             title: payload.title,
+            icon, // ✅ NEW
             price: payload.price ?? 0,
             duration: payload.duration ?? 30,
             description: payload.description || null,
@@ -349,6 +362,10 @@ module.exports = {
         ? parseIds(payload.unitIds || payload.unit_ids)
         : null
 
+      // ✅ NEW: só altera se vier no payload
+      const hasIconPatch = payload.icon !== undefined
+      const icon = hasIconPatch ? normalizeIcon(payload.icon) : null
+
       const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
         await getTenantModels(groupId)
       sequelize = tenantSequelize
@@ -367,6 +384,10 @@ module.exports = {
         if (payload.duration !== undefined) service.duration = payload.duration
         service.description = payload.description ?? service.description
         if (payload.status) service.status = payload.status
+
+        // ✅ NEW
+        if (hasIconPatch) service.icon = icon
+
         service.updated_by = userId
 
         await service.save({ transaction: t })
