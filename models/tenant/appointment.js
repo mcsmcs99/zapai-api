@@ -14,6 +14,12 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       unique: true
     },
+
+    unit_id: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false
+    },
+
     service_id: {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: false
@@ -73,6 +79,11 @@ module.exports = (sequelize, DataTypes) => {
   })
 
   Appointment.associate = (models) => {
+    // Appointment -> Unit
+    if (models.Unit) {
+      Appointment.belongsTo(models.Unit, { foreignKey: 'unit_id', as: 'unit' })
+    }
+
     // Appointment -> Service
     if (models.Service) {
       Appointment.belongsTo(models.Service, { foreignKey: 'service_id', as: 'service' })

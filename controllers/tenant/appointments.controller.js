@@ -6,6 +6,8 @@ const { randomUUID } = require('crypto')
 
 const defineAppointmentModel = require('../../models/tenant/appointment')
 const defineServiceStaffModel = require('../../models/tenant/service_staff')
+const defineStaffModel = require('../../models/tenant/staff')
+const defineUnitServiceModel = require('../../models/tenant/unit_service')
 
 // --- helper para obter conexão dinâmica ------------------------------------
 /**
@@ -38,8 +40,10 @@ async function getTenantModels (groupId) {
 
   const Appointment = defineAppointmentModel(sequelize, DataTypes)
   const ServiceStaff = defineServiceStaffModel(sequelize, DataTypes)
+  const Staff = defineStaffModel(sequelize, DataTypes)
+  const UnitService = defineUnitServiceModel(sequelize, DataTypes)
 
-  return { sequelize, Appointment, ServiceStaff }
+  return { sequelize, Appointment, ServiceStaff, Staff, UnitService }
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -52,7 +56,6 @@ const parseBR = (s) => {
 }
 
 const toISODate = (v) => {
-  // aceita "YYYY-MM-DD" ou "DD/MM/YYYY"
   if (!v) return null
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v
   const d = parseBR(v)
@@ -63,15 +66,75 @@ const toISODate = (v) => {
   return `${y}-${m}-${dd}`
 }
 
+const weekdayKeyFromISO = (iso) => {
+  const d = new Date(iso + 'T00:00:00')
+  const map = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+  return map[d.getDay()]
+}
+
+const toMin = (hhmm) => {
+  const [h, m] = String(hhmm || '0:0').split(':').map(Number)
+  return (h * 60) + (m || 0)
+}
+
+function isValidTime (t) {
+  return typeof t === 'string' && /^\d{2}:\d{2}$/.test(t)
+}
+
+/**
+ * Valida:
+ * - collaborator tem schedule no dia
+ * - o start/end está dentro de algum intervalo
+ * - e esse intervalo tem unit_id que bate com o unit_id do agendamento
+ */
+function assertTimeWithinStaffScheduleUnit ({ schedule, dateISO, start, end, unitId }) {
+  const dayKey = weekdayKeyFromISO(dateISO)
+  const day = schedule?.[dayKey]
+  if (!day || day.closed) {
+    const e = new Error('Colaborador não atende no dia selecionado.')
+    e.statusCode = 400
+    throw e
+  }
+
+  const startMin = toMin(start)
+  const endMin = toMin(end)
+
+  const intervals = Array.isArray(day.intervals) ? day.intervals : []
+
+  const ok = intervals.some(it => {
+    const itStart = it?.start
+    const itEnd = it?.end
+    const itUnit = Number(it?.unit_id)
+    if (!isValidTime(itStart) || !isValidTime(itEnd)) return false
+    if (!Number.isFinite(itUnit) || itUnit <= 0) return false
+
+    const itStartMin = toMin(itStart)
+    const itEndMin = toMin(itEnd)
+
+    // dentro do intervalo
+    const inside = startMin >= itStartMin && endMin <= itEndMin
+    if (!inside) return false
+
+    // e mesma unidade
+    return Number(unitId) === itUnit
+  })
+
+  if (!ok) {
+    const e = new Error('Horário selecionado não está disponível para este colaborador nesta unidade.')
+    e.statusCode = 400
+    throw e
+  }
+}
+
 async function assertNoScheduleConflict ({
   Appointment,
   dateISO,
   collaboratorId,
   start,
   end,
-  ignoreId = null
+  ignoreId = null,
+  unitId = null // ✅ agora conflita por unidade + colaborador + dia
 }) {
-  // overlap: existing.start < newEnd AND existing.end > newStart
   const where = {
     date: dateISO,
     collaborator_id: Number(collaboratorId),
@@ -80,11 +143,17 @@ async function assertNoScheduleConflict ({
     end: { [Op.gt]: start }
   }
 
+  // ✅ se você quer impedir conflito entre unidades diferentes do mesmo colaborador,
+  // remova este filtro. Mas como agora o staff tem schedule por unidade, o mais coerente
+  // é conflito ser GLOBAL do colaborador (sem unit). Você escolhe.
+  // Aqui vou MANTER global (não filtra por unit_id), porque o colaborador não consegue estar em 2 lugares.
+  // if (unitId) where.unit_id = Number(unitId)
+
   if (ignoreId) where.id = { [Op.ne]: Number(ignoreId) }
 
   const conflict = await Appointment.findOne({
     where,
-    attributes: ['id', 'date', 'start', 'end', 'status', 'service_id', 'collaborator_id'],
+    attributes: ['id', 'date', 'start', 'end', 'status', 'service_id', 'collaborator_id', 'unit_id'],
     order: [['id', 'DESC']]
   })
 
@@ -99,8 +168,7 @@ async function assertNoScheduleConflict ({
 }
 
 /**
- * Colaborador só pode ser agendado se existir vínculo na pivot service_staff
- * (status=1 ativo). Isso substitui o antigo "collaborator_ids" no service.
+ * Colaborador só pode ser agendado se existir vínculo na pivot service_staff (status=1).
  */
 async function assertCollaboratorCanDoService ({
   ServiceStaff,
@@ -139,23 +207,96 @@ async function assertCollaboratorCanDoService ({
   }
 }
 
+/**
+ * ✅ Serviço deve estar ativo na unidade (pivot unit_service status=1)
+ */
+async function assertServiceAvailableInUnit ({
+  UnitService,
+  unitId,
+  serviceId,
+  transaction
+}) {
+  const uid = Number(unitId)
+  const sid = Number(serviceId)
+
+  if (!uid) {
+    const err = new Error('unit_id é obrigatório.')
+    err.statusCode = 400
+    throw err
+  }
+  if (!sid) {
+    const err = new Error('service_id é obrigatório.')
+    err.statusCode = 400
+    throw err
+  }
+
+  const link = await UnitService.findOne({
+    where: {
+      unit_id: uid,
+      service_id: sid,
+      status: 1
+    },
+    attributes: ['unit_id', 'service_id', 'status'],
+    transaction
+  })
+
+  if (!link) {
+    const err = new Error('Este serviço não está disponível na unidade selecionada.')
+    err.statusCode = 400
+    throw err
+  }
+}
+
+/**
+ * ✅ carrega staff.schedule do banco e valida unidade/horário
+ */
+async function assertStaffScheduleMatchesUnitAndTime ({
+  Staff,
+  staffId,
+  dateISO,
+  start,
+  end,
+  unitId,
+  transaction
+}) {
+  const row = await Staff.findByPk(Number(staffId), {
+    attributes: ['id', 'schedule', 'status'],
+    transaction
+  })
+
+  if (!row) {
+    const e = new Error('Colaborador não encontrado.')
+    e.statusCode = 404
+    throw e
+  }
+
+  if (row.status && String(row.status) !== 'active') {
+    const e = new Error('Colaborador inativo.')
+    e.statusCode = 400
+    throw e
+  }
+
+  // schedule pode vir string JSON ou objeto (depende do model)
+  let schedule = row.schedule
+  if (typeof schedule === 'string') {
+    try { schedule = JSON.parse(schedule) } catch (_) {}
+  }
+
+  assertTimeWithinStaffScheduleUnit({
+    schedule,
+    dateISO,
+    start,
+    end,
+    unitId
+  })
+}
+
 // --------------------------------------------------------------------------
 // Controller
 // --------------------------------------------------------------------------
 module.exports = {
   /**
-   * ✅ NOVO: GET /tenant/appointments/conflicts
-   *
-   * Objetivo: retornar SOMENTE os agendamentos que podem conflitar
-   * com a escolha do usuário no editor.
-   *
-   * Regras:
-   * - filtra APENAS por colaborador (obrigatório)
-   * - filtra por date (obrigatório)
-   * - NÃO filtra por service (de propósito)
-   * - por padrão, ignora cancelados
-   * - aceita exclude_id (pra edição)
-   * - opcionalmente aceita start/end pra filtrar overlaps (mais leve ainda)
+   * GET /tenant/appointments/conflicts
    */
   async conflicts (req, res) {
     let sequelize
@@ -175,48 +316,34 @@ module.exports = {
       }
 
       const excludeId = Number(req.query.exclude_id || 0) || null
-
-      // default: não inclui cancelados
       const includeCancelled = String(req.query.include_cancelled || '').toLowerCase() === 'true'
 
-      // opcional: filtrar overlaps por start/end
       const start = req.query.start
       const end = req.query.end
-      const hasTimeRange = start && end && /^\d{2}:\d{2}$/.test(start) && /^\d{2}:\d{2}$/.test(end)
+      const hasTimeRange = isValidTime(start) && isValidTime(end)
 
       const where = {
         date: dateISO,
         collaborator_id: collaboratorId
       }
 
-      if (!includeCancelled) {
-        where.status = { [Op.ne]: 'cancelled' }
-      }
+      if (!includeCancelled) where.status = { [Op.ne]: 'cancelled' }
+      if (excludeId) where.id = { [Op.ne]: excludeId }
 
-      if (excludeId) {
-        where.id = { [Op.ne]: excludeId }
-      }
-
-      // se você passar start/end, traz só overlaps
       if (hasTimeRange) {
         where.start = { [Op.lt]: end }
         where.end = { [Op.gt]: start }
       }
 
-      // payload leve (pro editor só precisa disso)
       const rows = await Appointment.findAll({
         where,
-        attributes: ['id', 'date', 'start', 'end', 'status', 'service_id', 'collaborator_id'],
+        attributes: ['id', 'date', 'start', 'end', 'status', 'service_id', 'collaborator_id', 'unit_id'],
         order: [['start', 'ASC']]
       })
 
       return res.json({
         data: rows,
-        meta: {
-          date: dateISO,
-          collaborator_id: collaboratorId,
-          count: rows.length
-        }
+        meta: { date: dateISO, collaborator_id: collaboratorId, count: rows.length }
       })
     } catch (err) {
       console.error('Erro ao buscar conflitos de appointments:', err)
@@ -247,6 +374,7 @@ module.exports = {
       const search = req.query.search || req.query.q
       const collab = req.query.collab || req.query.collaborator_id
       const service = req.query.service || req.query.service_id
+      const unit = req.query.unit || req.query.unit_id
 
       const fromISO = toISODate(req.query.from)
       const toISO = toISODate(req.query.to)
@@ -256,6 +384,7 @@ module.exports = {
       if (status) where.status = status
       if (collab) where.collaborator_id = Number(collab)
       if (service) where.service_id = Number(service)
+      if (unit) where.unit_id = Number(unit)
 
       if (fromISO || toISO) {
         where.date = {}
@@ -268,6 +397,7 @@ module.exports = {
         if (q) {
           const or = [{ notes: { [Op.like]: `%${q}%` } }]
           if (!Number.isNaN(Number(q))) or.push({ customer_id: Number(q) })
+          or.push({ customer_name: { [Op.like]: `%${q}%` } })
           where[Op.or] = or
         }
       }
@@ -331,15 +461,22 @@ module.exports = {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
 
-      const { sequelize: tenantSequelize, Appointment, ServiceStaff } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Appointment, ServiceStaff, Staff, UnitService } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const payload = req.body || {}
 
-      if (!payload.service_id) {
+      const unitId = Number(payload.unit_id ?? payload.unitId ?? 0)
+      const serviceId = Number(payload.service_id ?? payload.serviceId ?? 0)
+      const collaboratorId = Number(payload.collaborator_id ?? payload.collaboratorId ?? 0)
+
+      if (!Number.isFinite(unitId) || unitId <= 0) {
+        return res.status(400).json({ message: 'unit_id é obrigatório.' })
+      }
+      if (!Number.isFinite(serviceId) || serviceId <= 0) {
         return res.status(400).json({ message: 'service_id é obrigatório.' })
       }
-      if (!payload.collaborator_id) {
+      if (!Number.isFinite(collaboratorId) || collaboratorId <= 0) {
         return res.status(400).json({ message: 'collaborator_id é obrigatório.' })
       }
 
@@ -348,36 +485,44 @@ module.exports = {
         return res.status(400).json({ message: 'date inválido. Use YYYY-MM-DD (ou DD/MM/YYYY).' })
       }
 
-      if (!payload.start || !/^\d{2}:\d{2}$/.test(payload.start)) {
+      if (!isValidTime(payload.start)) {
         return res.status(400).json({ message: 'start inválido. Use HH:mm.' })
       }
-      if (!payload.end || !/^\d{2}:\d{2}$/.test(payload.end)) {
+      if (!isValidTime(payload.end)) {
         return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
       }
 
-      // ✅ valida vínculo na pivot
-      await assertCollaboratorCanDoService({
-        ServiceStaff,
-        serviceId: payload.service_id,
-        staffId: payload.collaborator_id
-      })
-
       const statusToSave = payload.status || 'pending'
+
+      // ✅ valida regras antes de gravar
+      await assertServiceAvailableInUnit({ UnitService, unitId, serviceId })
+      await assertCollaboratorCanDoService({ ServiceStaff, serviceId, staffId: collaboratorId })
+      await assertStaffScheduleMatchesUnitAndTime({
+        Staff,
+        staffId: collaboratorId,
+        dateISO,
+        start: payload.start,
+        end: payload.end,
+        unitId
+      })
 
       if (statusToSave !== 'cancelled') {
         await assertNoScheduleConflict({
           Appointment,
           dateISO,
-          collaboratorId: payload.collaborator_id,
+          collaboratorId,
           start: payload.start,
-          end: payload.end
+          end: payload.end,
+          ignoreId: null,
+          unitId
         })
       }
 
       const newRow = await Appointment.create({
         unique_key: randomUUID(),
-        service_id: Number(payload.service_id),
-        collaborator_id: Number(payload.collaborator_id),
+        unit_id: unitId,
+        service_id: serviceId,
+        collaborator_id: collaboratorId,
 
         customer_id: payload.customer_id ?? null,
         customer_name: payload.customer_name ? String(payload.customer_name).trim() : null,
@@ -394,21 +539,12 @@ module.exports = {
       return res.status(201).json(newRow)
     } catch (err) {
       console.error('Erro ao criar appointment:', err)
-
       const statusCode = err.statusCode || 500
 
-      if (statusCode === 409) {
-        return res.status(409).json({ message: err.message, conflict: err.conflict })
-      }
+      if (statusCode === 409) return res.status(409).json({ message: err.message, conflict: err.conflict })
+      if (statusCode === 400 || statusCode === 404) return res.status(statusCode).json({ message: err.message })
 
-      if (statusCode === 400 || statusCode === 404) {
-        return res.status(statusCode).json({ message: err.message })
-      }
-
-      return res.status(500).json({
-        message: 'Erro ao criar agendamento.',
-        error: err.message
-      })
+      return res.status(500).json({ message: 'Erro ao criar agendamento.', error: err.message })
     } finally {
       if (sequelize) await sequelize.close().catch(() => {})
     }
@@ -423,7 +559,7 @@ module.exports = {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
 
-      const { sequelize: tenantSequelize, Appointment, ServiceStaff } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Appointment, ServiceStaff, Staff, UnitService } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const payload = req.body || {}
@@ -431,37 +567,30 @@ module.exports = {
       const row = await Appointment.findByPk(req.params.id)
       if (!row) return res.status(404).json({ message: 'Agendamento não encontrado.' })
 
-      // atualiza campos
+      // aplica campos recebidos
+      if (payload.unit_id != null) row.unit_id = Number(payload.unit_id)
       if (payload.service_id != null) row.service_id = Number(payload.service_id)
       if (payload.collaborator_id != null) row.collaborator_id = Number(payload.collaborator_id)
 
-      // ✅ valida vínculo na pivot com os valores finais
-      await assertCollaboratorCanDoService({
-        ServiceStaff,
-        serviceId: row.service_id,
-        staffId: row.collaborator_id
-      })
+      const unitId = Number(row.unit_id)
+      const serviceId = Number(row.service_id)
+      const collaboratorId = Number(row.collaborator_id)
+
+      if (!Number.isFinite(unitId) || unitId <= 0) return res.status(400).json({ message: 'unit_id inválido.' })
+      if (!Number.isFinite(serviceId) || serviceId <= 0) return res.status(400).json({ message: 'service_id inválido.' })
+      if (!Number.isFinite(collaboratorId) || collaboratorId <= 0) return res.status(400).json({ message: 'collaborator_id inválido.' })
 
       if (payload.customer_id !== undefined) row.customer_id = payload.customer_id ?? null
-      if (payload.customer_name !== undefined) {
-        row.customer_name = payload.customer_name ? String(payload.customer_name).trim() : null
-      }
+      if (payload.customer_name !== undefined) row.customer_name = payload.customer_name ? String(payload.customer_name).trim() : null
 
       if (payload.date) {
         const dateISO = toISODate(payload.date)
-        if (!dateISO) {
-          return res.status(400).json({ message: 'date inválido. Use YYYY-MM-DD (ou DD/MM/YYYY).' })
-        }
+        if (!dateISO) return res.status(400).json({ message: 'date inválido. Use YYYY-MM-DD (ou DD/MM/YYYY).' })
         row.date = dateISO
       }
 
-      if (!payload.start || !/^\d{2}:\d{2}$/.test(payload.start)) {
-        return res.status(400).json({ message: 'start inválido. Use HH:mm.' })
-      }
-      if (!payload.end || !/^\d{2}:\d{2}$/.test(payload.end)) {
-        return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
-      }
-
+      if (!isValidTime(payload.start)) return res.status(400).json({ message: 'start inválido. Use HH:mm.' })
+      if (!isValidTime(payload.end)) return res.status(400).json({ message: 'end inválido. Use HH:mm.' })
       row.start = payload.start
       row.end = payload.end
 
@@ -471,19 +600,33 @@ module.exports = {
 
       row.updated_by = userId
 
+      // ✅ valida regras com os valores finais
+      await assertServiceAvailableInUnit({ UnitService, unitId, serviceId })
+      await assertCollaboratorCanDoService({ ServiceStaff, serviceId, staffId: collaboratorId })
+      await assertStaffScheduleMatchesUnitAndTime({
+        Staff,
+        staffId: collaboratorId,
+        dateISO: row.date,
+        start: row.start,
+        end: row.end,
+        unitId
+      })
+
       if (row.status !== 'cancelled') {
         await assertNoScheduleConflict({
           Appointment,
           dateISO: row.date,
-          collaboratorId: row.collaborator_id,
+          collaboratorId,
           start: row.start,
           end: row.end,
-          ignoreId: row.id
+          ignoreId: row.id,
+          unitId
         })
       }
 
       await row.save({
         fields: [
+          'unit_id',
           'service_id',
           'collaborator_id',
           'customer_id',
@@ -502,21 +645,12 @@ module.exports = {
       return res.json(row)
     } catch (err) {
       console.error('Erro ao atualizar appointment:', err)
-
       const statusCode = err.statusCode || 500
 
-      if (statusCode === 409) {
-        return res.status(409).json({ message: err.message, conflict: err.conflict })
-      }
+      if (statusCode === 409) return res.status(409).json({ message: err.message, conflict: err.conflict })
+      if (statusCode === 400 || statusCode === 404) return res.status(statusCode).json({ message: err.message })
 
-      if (statusCode === 400 || statusCode === 404) {
-        return res.status(statusCode).json({ message: err.message })
-      }
-
-      return res.status(500).json({
-        message: 'Erro ao atualizar agendamento.',
-        error: err.message
-      })
+      return res.status(500).json({ message: 'Erro ao atualizar agendamento.', error: err.message })
     } finally {
       if (sequelize) await sequelize.close().catch(() => {})
     }
