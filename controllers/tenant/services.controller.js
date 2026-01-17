@@ -6,6 +6,7 @@ const { randomUUID } = require('crypto')
 
 const defineServiceModel = require('../../models/tenant/services')
 const defineServiceStaffModel = require('../../models/tenant/service_staff')
+const defineUnitServiceModel = require('../../models/tenant/unit_service')
 
 // --- helper para obter conexão dinâmica ------------------------------------
 async function getTenantSequelize (groupId) {
@@ -32,8 +33,9 @@ async function getTenantModels (groupId) {
 
   const Service = defineServiceModel(sequelize, DataTypes)
   const ServiceStaff = defineServiceStaffModel(sequelize, DataTypes)
+  const UnitService = defineUnitServiceModel(sequelize, DataTypes)
 
-  return { sequelize, Service, ServiceStaff }
+  return { sequelize, Service, ServiceStaff, UnitService }
 }
 
 function parseIds (raw) {
@@ -99,11 +101,50 @@ async function syncServiceCollaborators (
   )
 }
 
-function mapServiceOut (row, collaboratorIds = []) {
+// ------------------------ UnitService helpers -------------------------------
+
+async function loadUnitIds (UnitService, serviceId, transaction) {
+  const rows = await UnitService.findAll({
+    where: { service_id: serviceId },
+    attributes: ['unit_id'],
+    transaction
+  })
+
+  return rows.map(r => Number(r.unit_id)).filter(n => Number.isFinite(n))
+}
+
+async function syncServiceUnits (
+  UnitService,
+  serviceId,
+  unitIds,
+  transaction
+) {
+  await UnitService.destroy({
+    where: { service_id: serviceId },
+    transaction
+  })
+
+  if (!Array.isArray(unitIds) || unitIds.length === 0) return
+
+  const ids = [...new Set(unitIds.map(Number))].filter(n => Number.isFinite(n))
+  if (!ids.length) return
+
+  await UnitService.bulkCreate(
+    ids.map(unitId => ({
+      service_id: serviceId,
+      unit_id: unitId,
+      status: 1
+    })),
+    { transaction }
+  )
+}
+
+function mapServiceOut (row, collaboratorIds = [], unitIds = []) {
   const plain = row?.toJSON ? row.toJSON() : row
   return {
     ...plain,
-    collaboratorIds
+    collaboratorIds,
+    unitIds
   }
 }
 
@@ -119,7 +160,7 @@ module.exports = {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
-      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const page = Number(req.query.page || 1)
@@ -147,17 +188,17 @@ module.exports = {
         order: [['title', 'ASC']]
       })
 
-      // busca collaboratorIds em lote (1 query) e monta map service_id => [staff_id...]
       const serviceIds = rows.map(r => r.id)
-      let relMap = {}
 
+      // Map de colaboradores
+      let staffMap = {}
       if (serviceIds.length) {
         const rels = await ServiceStaff.findAll({
           where: { service_id: { [Op.in]: serviceIds } },
           attributes: ['service_id', 'staff_id']
         })
 
-        relMap = rels.reduce((acc, r) => {
+        staffMap = rels.reduce((acc, r) => {
           const sid = Number(r.service_id)
           const stid = Number(r.staff_id)
           if (!acc[sid]) acc[sid] = []
@@ -166,10 +207,27 @@ module.exports = {
         }, {})
       }
 
+      // Map de unidades
+      let unitMap = {}
+      if (serviceIds.length) {
+        const rels = await UnitService.findAll({
+          where: { service_id: { [Op.in]: serviceIds } },
+          attributes: ['service_id', 'unit_id']
+        })
+
+        unitMap = rels.reduce((acc, r) => {
+          const sid = Number(r.service_id)
+          const uid = Number(r.unit_id)
+          if (!acc[sid]) acc[sid] = []
+          acc[sid].push(uid)
+          return acc
+        }, {})
+      }
+
       const totalPages = Math.ceil(count / limit) || 1
 
       return res.json({
-        data: rows.map(s => mapServiceOut(s, relMap[s.id] || [])),
+        data: rows.map(s => mapServiceOut(s, staffMap[s.id] || [], unitMap[s.id] || [])),
         meta: { total: count, page, limit, totalPages }
       })
     } catch (err) {
@@ -191,7 +249,7 @@ module.exports = {
     let sequelize
     try {
       const groupId = req.query.group_id || req.body.group_id
-      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const id = req.params.id
@@ -203,8 +261,9 @@ module.exports = {
       }
 
       const collaboratorIds = await loadCollaboratorIds(ServiceStaff, service.id)
+      const unitIds = await loadUnitIds(UnitService, service.id)
 
-      return res.json(mapServiceOut(service, collaboratorIds))
+      return res.json(mapServiceOut(service, collaboratorIds, unitIds))
     } catch (err) {
       console.error('Erro ao buscar serviço por ID:', err)
       return res.status(500).json({
@@ -228,8 +287,10 @@ module.exports = {
       const payload = req.body || {}
 
       const collaboratorIds = parseIds(payload.collaboratorIds || payload.collaborator_ids)
+      const unitIds = parseIds(payload.unitIds || payload.unit_ids)
 
-      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
+        await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const created = await sequelize.transaction(async (t) => {
@@ -247,12 +308,12 @@ module.exports = {
         )
 
         await syncServiceCollaborators(ServiceStaff, newService.id, collaboratorIds, t)
+        await syncServiceUnits(UnitService, newService.id, unitIds, t)
 
         return newService
       })
 
-      // retorna o que o front espera
-      return res.status(201).json(mapServiceOut(created, collaboratorIds))
+      return res.status(201).json(mapServiceOut(created, collaboratorIds, unitIds))
     } catch (err) {
       console.error('Erro ao criar serviço:', err)
       return res.status(500).json({
@@ -277,12 +338,19 @@ module.exports = {
 
       const hasCollaboratorsPatch =
         payload.collaboratorIds !== undefined || payload.collaborator_ids !== undefined
+      const hasUnitsPatch =
+        payload.unitIds !== undefined || payload.unit_ids !== undefined
 
       const collaboratorIds = hasCollaboratorsPatch
         ? parseIds(payload.collaboratorIds || payload.collaborator_ids)
         : null
 
-      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
+      const unitIds = hasUnitsPatch
+        ? parseIds(payload.unitIds || payload.unit_ids)
+        : null
+
+      const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
+        await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const updated = await sequelize.transaction(async (t) => {
@@ -307,17 +375,30 @@ module.exports = {
           await syncServiceCollaborators(ServiceStaff, service.id, collaboratorIds, t)
         }
 
+        if (hasUnitsPatch) {
+          await syncServiceUnits(UnitService, service.id, unitIds, t)
+        }
+
         return service
       })
 
-      const outCollaboratorIds = hasCollaboratorsPatch
-        ? collaboratorIds
-        : await loadCollaboratorIds(
-            (await getTenantModels(groupId)).ServiceStaff, // fallback: carrega depois sem transação
-            updated.id
-          )
+      // Se não veio patch de algum vínculo, carrega do banco
+      let outCollaboratorIds = collaboratorIds
+      let outUnitIds = unitIds
 
-      return res.json(mapServiceOut(updated, outCollaboratorIds || []))
+      if (!hasCollaboratorsPatch || !hasUnitsPatch) {
+        const { ServiceStaff: SS2, UnitService: US2 } = await getTenantModels(groupId)
+
+        if (!hasCollaboratorsPatch) {
+          outCollaboratorIds = await loadCollaboratorIds(SS2, updated.id)
+        }
+
+        if (!hasUnitsPatch) {
+          outUnitIds = await loadUnitIds(US2, updated.id)
+        }
+      }
+
+      return res.json(mapServiceOut(updated, outCollaboratorIds || [], outUnitIds || []))
     } catch (err) {
       const statusCode = err.statusCode || 500
       console.error('Erro ao atualizar serviço:', err)
@@ -340,12 +421,13 @@ module.exports = {
       const groupId = req.query.group_id || req.body.group_id
       const userId = req.query.user_id || req.body.user_id || null
 
-      const { sequelize: tenantSequelize, Service, ServiceStaff } = await getTenantModels(groupId)
+      const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
+        await getTenantModels(groupId)
       sequelize = tenantSequelize
 
       const id = req.params.id
 
-      const deleted = await sequelize.transaction(async (t) => {
+      await sequelize.transaction(async (t) => {
         const service = await Service.findByPk(id, { transaction: t })
 
         if (!service) {
@@ -357,15 +439,11 @@ module.exports = {
         service.deleted_by = userId
         await service.save({ transaction: t })
 
-        // limpa vínculos (se quiser manter histórico, remova isso e use status=0)
-        await ServiceStaff.destroy({
-          where: { service_id: service.id },
-          transaction: t
-        })
+        // limpa vínculos
+        await ServiceStaff.destroy({ where: { service_id: service.id }, transaction: t })
+        await UnitService.destroy({ where: { service_id: service.id }, transaction: t })
 
-        await service.destroy({ transaction: t }) // paranoid: true -> soft delete
-
-        return service
+        await service.destroy({ transaction: t })
       })
 
       return res.json({ message: 'Serviço removido com sucesso.' })

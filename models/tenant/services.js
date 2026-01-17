@@ -91,6 +91,13 @@ module.exports = (sequelize, DataTypes) => {
       otherKey: 'staff_id',
       as: 'collaborators'
     })
+
+    Service.belongsToMany(models.Unit, {
+      through: models.UnitService,
+      foreignKey: 'service_id',
+      otherKey: 'unit_id',
+      as: 'units'
+    })
   }
 
   return Service
