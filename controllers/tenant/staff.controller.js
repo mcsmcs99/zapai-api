@@ -65,7 +65,6 @@ async function loadServiceIds (ServiceStaff, staffId, transaction) {
 }
 
 async function syncStaffServices (ServiceStaff, staffId, serviceIds, transaction) {
-  // remove vínculos antigos do colaborador
   await ServiceStaff.destroy({
     where: { staff_id: staffId },
     transaction
@@ -95,12 +94,114 @@ function mapStaffOut (row, serviceIds = []) {
 }
 
 // --------------------------------------------------------------------------
+// NOVO: Normalização/validação de schedule com unit_id por intervalo
+// --------------------------------------------------------------------------
+const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+
+function normalizeSchedule (rawSchedule) {
+  const src = rawSchedule || {}
+  const out = {}
+
+  for (const key of DAY_KEYS) {
+    const v = src[key]
+
+    // formato novo
+    if (v && typeof v === 'object' && 'closed' in v && Array.isArray(v.intervals)) {
+      out[key] = {
+        closed: !!v.closed,
+        intervals: v.intervals.map(it => ({
+          start: it?.start ?? null,
+          end: it?.end ?? null,
+          unit_id: it?.unit_id != null ? Number(it.unit_id) : null
+        }))
+      }
+      continue
+    }
+
+    // formato antigo string
+    if (typeof v === 'string') {
+      const trimmed = v.trim()
+      if (!trimmed || trimmed.toLowerCase() === 'fechado') {
+        out[key] = { closed: true, intervals: [] }
+        continue
+      }
+
+      const intervals = trimmed
+        .split(',')
+        .map(s => s.trim())
+        .map(seg => {
+          const [start, end] = seg.split('-').map(t => t.trim())
+          if (!start || !end) return null
+          return { start, end, unit_id: null }
+        })
+        .filter(Boolean)
+
+      out[key] = {
+        closed: intervals.length === 0,
+        intervals: intervals
+      }
+      continue
+    }
+
+    // default
+    out[key] = { closed: true, intervals: [] }
+  }
+
+  return out
+}
+
+/**
+ * Valida:
+ * - se closed = false, intervalos precisam ter start/end válidos e unit_id preenchido
+ * - sem sobreposição
+ */
+function validateSchedule (schedule) {
+  if (!schedule || typeof schedule !== 'object') return
+
+  for (const key of DAY_KEYS) {
+    const day = schedule[key]
+    if (!day || day.closed) continue
+
+    const intervals = Array.isArray(day.intervals) ? day.intervals : []
+
+    for (const it of intervals) {
+      const start = it?.start ?? null
+      const end = it?.end ?? null
+      const unitId = it?.unit_id
+
+      if (!start || !end || start >= end) {
+        const e = new Error(`Invalid schedule interval on ${key}. Check start/end.`)
+        e.statusCode = 400
+        throw e
+      }
+
+      if (unitId == null || !Number.isFinite(Number(unitId)) || Number(unitId) <= 0) {
+        const e = new Error(`Missing unit_id on ${key} interval (${start}-${end}).`)
+        e.statusCode = 400
+        throw e
+      }
+    }
+
+    // valida sobreposição
+    const sorted = [...intervals].sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')))
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1]
+      const cur = sorted[i]
+      if (cur.start < prev.end) {
+        const e = new Error(`Overlapping intervals on ${key}.`)
+        e.statusCode = 400
+        throw e
+      }
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
 // Controller
 // --------------------------------------------------------------------------
 module.exports = {
   /**
    * GET /staff
-   * Lista colaboradores com paginação e filtros
    */
   async list (req, res) {
     let sequelize
@@ -171,7 +272,6 @@ module.exports = {
 
   /**
    * GET /staff/:id
-   * Retorna um colaborador específico
    */
   async getById (req, res) {
     let sequelize
@@ -181,7 +281,6 @@ module.exports = {
       sequelize = tenantSequelize
 
       const id = req.params.id
-
       const staff = await Staff.findByPk(id)
 
       if (!staff) {
@@ -189,7 +288,6 @@ module.exports = {
       }
 
       const serviceIds = await loadServiceIds(ServiceStaff, staff.id)
-
       return res.json(mapStaffOut(staff, serviceIds))
     } catch (err) {
       console.error('Erro ao buscar staff por ID:', err)
@@ -204,10 +302,6 @@ module.exports = {
 
   /**
    * POST /staff
-   * Cria um novo colaborador
-   *
-   * Espera opcionalmente:
-   *   payload.serviceIds (array)  -> serviços vinculados ao colaborador
    */
   async create (req, res) {
     let sequelize
@@ -217,6 +311,10 @@ module.exports = {
 
       const payload = req.body || {}
       const serviceIds = parseIds(payload.serviceIds || payload.service_ids)
+
+      // 🔥 normaliza/valida schedule antes de salvar
+      const schedule = payload.schedule !== undefined ? normalizeSchedule(payload.schedule) : undefined
+      if (schedule !== undefined) validateSchedule(schedule)
 
       const { sequelize: tenantSequelize, Staff, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
@@ -228,24 +326,23 @@ module.exports = {
             name: payload.name,
             role: payload.role,
             photo_url: payload.photoUrl || payload.photo_url || null,
-            schedule: payload.schedule,
+            schedule: schedule !== undefined ? schedule : payload.schedule, // mantém compat
             status: payload.status || 'active',
             created_by: userId
           },
           { transaction: t }
         )
 
-        // sincroniza vínculos com services
         await syncStaffServices(ServiceStaff, newStaff.id, serviceIds, t)
-
         return newStaff
       })
 
       return res.status(201).json(mapStaffOut(created, serviceIds))
     } catch (err) {
+      const statusCode = err.statusCode || 500
       console.error('Erro ao criar staff:', err)
-      return res.status(500).json({
-        message: 'Erro ao criar colaborador.',
+      return res.status(statusCode).json({
+        message: statusCode === 400 ? err.message : 'Erro ao criar colaborador.',
         error: err.message
       })
     } finally {
@@ -255,9 +352,6 @@ module.exports = {
 
   /**
    * PUT /staff/:id
-   * Atualiza um colaborador existente
-   *
-   * Se vier payload.serviceIds -> sincroniza serviços do colaborador
    */
   async update (req, res) {
     let sequelize
@@ -275,6 +369,11 @@ module.exports = {
         ? parseIds(payload.serviceIds || payload.service_ids)
         : null
 
+      // 🔥 normaliza/valida schedule (se veio no patch)
+      const hasSchedulePatch = payload.schedule !== undefined
+      const schedule = hasSchedulePatch ? normalizeSchedule(payload.schedule) : null
+      if (hasSchedulePatch) validateSchedule(schedule)
+
       const { sequelize: tenantSequelize, Staff, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
 
@@ -290,7 +389,8 @@ module.exports = {
         staff.name = payload.name ?? staff.name
         staff.role = payload.role ?? staff.role
         staff.photo_url = payload.photoUrl ?? payload.photo_url ?? staff.photo_url
-        if (payload.schedule) staff.schedule = payload.schedule
+
+        if (hasSchedulePatch) staff.schedule = schedule
         if (payload.status) staff.status = payload.status
         staff.updated_by = userId
 
@@ -303,16 +403,20 @@ module.exports = {
         return staff
       })
 
+      // ✅ carrega serviceIds sem abrir nova conexão
       const outServiceIds = hasServicesPatch
         ? serviceIds
-        : await loadServiceIds((await getTenantModels(groupId)).ServiceStaff, updated.id)
+        : await loadServiceIds(ServiceStaff, updated.id)
 
       return res.json(mapStaffOut(updated, outServiceIds || []))
     } catch (err) {
       const statusCode = err.statusCode || 500
       console.error('Erro ao atualizar staff:', err)
       return res.status(statusCode).json({
-        message: statusCode === 404 ? err.message : 'Erro ao atualizar colaborador.',
+        message:
+          statusCode === 404 || statusCode === 400
+            ? err.message
+            : 'Erro ao atualizar colaborador.',
         error: err.message
       })
     } finally {
@@ -322,7 +426,6 @@ module.exports = {
 
   /**
    * DELETE /staff/:id
-   * Remove (soft delete) um colaborador
    */
   async remove (req, res) {
     let sequelize
@@ -347,13 +450,12 @@ module.exports = {
         staff.deleted_by = userId
         await staff.save({ transaction: t })
 
-        // limpa vínculos (se quiser histórico, troque por status=0)
         await ServiceStaff.destroy({
           where: { staff_id: staff.id },
           transaction: t
         })
 
-        await staff.destroy({ transaction: t }) // paranoid: true -> soft delete
+        await staff.destroy({ transaction: t })
       })
 
       return res.json({ message: 'Colaborador removido com sucesso.' })
