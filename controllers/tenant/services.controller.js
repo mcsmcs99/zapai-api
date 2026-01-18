@@ -69,6 +69,13 @@ function normalizeIcon (icon) {
     : 'content_cut'
 }
 
+// ✅ NEW: normaliza o tipo de atendimento
+function normalizeAttendanceMode (raw) {
+  const v = String(raw || '').trim()
+  if (v === 'fixed' || v === 'client_location' || v === 'mixed') return v
+  return 'fixed'
+}
+
 async function loadCollaboratorIds (ServiceStaff, serviceId, transaction) {
   const rows = await ServiceStaff.findAll({
     where: { service_id: serviceId },
@@ -95,7 +102,6 @@ async function syncServiceCollaborators (
 
   // remove duplicados e inválidos
   const ids = [...new Set(collaboratorIds.map(Number))].filter(n => Number.isFinite(n))
-
   if (!ids.length) return
 
   await ServiceStaff.bulkCreate(
@@ -148,12 +154,18 @@ async function syncServiceUnits (
 
 function mapServiceOut (row, collaboratorIds = [], unitIds = []) {
   const plain = row?.toJSON ? row.toJSON() : row
+
+  const attendanceMode = normalizeAttendanceMode(plain?.attendance_mode)
+
   return {
     ...plain,
-    // ✅ NEW: fallback defensivo caso algum registro antigo venha sem icon
+    // fallback defensivo
     icon: plain?.icon || 'content_cut',
+    attendance_mode: attendanceMode,
+
     collaboratorIds,
-    unitIds
+    // se for somente domicílio, não faz sentido expor unitIds (evita confusão no front)
+    unitIds: attendanceMode === 'client_location' ? [] : unitIds
   }
 }
 
@@ -296,10 +308,11 @@ module.exports = {
       const payload = req.body || {}
 
       const collaboratorIds = parseIds(payload.collaboratorIds || payload.collaborator_ids)
-      const unitIds = parseIds(payload.unitIds || payload.unit_ids)
+      const unitIdsRaw = parseIds(payload.unitIds || payload.unit_ids)
 
-      // ✅ NEW
+      // NEW
       const icon = normalizeIcon(payload.icon)
+      const attendance_mode = normalizeAttendanceMode(payload.attendance_mode ?? payload.attendanceMode)
 
       const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
         await getTenantModels(groupId)
@@ -310,7 +323,8 @@ module.exports = {
           {
             unique_key: randomUUID(),
             title: payload.title,
-            icon, // ✅ NEW
+            icon,
+            attendance_mode, // ✅ NEW
             price: payload.price ?? 0,
             duration: payload.duration ?? 30,
             description: payload.description || null,
@@ -321,12 +335,15 @@ module.exports = {
         )
 
         await syncServiceCollaborators(ServiceStaff, newService.id, collaboratorIds, t)
+
+        // regra: se for somente domicílio, não mantém vinculo com unidades
+        const unitIds = attendance_mode === 'client_location' ? [] : unitIdsRaw
         await syncServiceUnits(UnitService, newService.id, unitIds, t)
 
-        return newService
+        return { newService, unitIds }
       })
 
-      return res.status(201).json(mapServiceOut(created, collaboratorIds, unitIds))
+      return res.status(201).json(mapServiceOut(created.newService, collaboratorIds, created.unitIds))
     } catch (err) {
       console.error('Erro ao criar serviço:', err)
       return res.status(500).json({
@@ -353,18 +370,25 @@ module.exports = {
         payload.collaboratorIds !== undefined || payload.collaborator_ids !== undefined
       const hasUnitsPatch =
         payload.unitIds !== undefined || payload.unit_ids !== undefined
+      const hasAttendancePatch =
+        payload.attendance_mode !== undefined || payload.attendanceMode !== undefined
 
       const collaboratorIds = hasCollaboratorsPatch
         ? parseIds(payload.collaboratorIds || payload.collaborator_ids)
         : null
 
-      const unitIds = hasUnitsPatch
+      const unitIdsRaw = hasUnitsPatch
         ? parseIds(payload.unitIds || payload.unit_ids)
         : null
 
-      // ✅ NEW: só altera se vier no payload
+      // ícone
       const hasIconPatch = payload.icon !== undefined
       const icon = hasIconPatch ? normalizeIcon(payload.icon) : null
+
+      // attendance_mode
+      const attendance_mode = hasAttendancePatch
+        ? normalizeAttendanceMode(payload.attendance_mode ?? payload.attendanceMode)
+        : null
 
       const { sequelize: tenantSequelize, Service, ServiceStaff, UnitService } =
         await getTenantModels(groupId)
@@ -379,43 +403,56 @@ module.exports = {
           throw e
         }
 
+        // atualiza campos
         service.title = payload.title ?? service.title
         if (payload.price !== undefined) service.price = payload.price
         if (payload.duration !== undefined) service.duration = payload.duration
         service.description = payload.description ?? service.description
         if (payload.status) service.status = payload.status
 
-        // ✅ NEW
         if (hasIconPatch) service.icon = icon
+        if (hasAttendancePatch) service.attendance_mode = attendance_mode
 
         service.updated_by = userId
-
         await service.save({ transaction: t })
 
+        // pivots
         if (hasCollaboratorsPatch) {
           await syncServiceCollaborators(ServiceStaff, service.id, collaboratorIds, t)
         }
 
-        if (hasUnitsPatch) {
-          await syncServiceUnits(UnitService, service.id, unitIds, t)
+        // regra: se mudou para domicílio, sempre limpa unidades
+        if (hasAttendancePatch && attendance_mode === 'client_location') {
+          await syncServiceUnits(UnitService, service.id, [], t)
+        } else if (hasUnitsPatch) {
+          await syncServiceUnits(UnitService, service.id, unitIdsRaw, t)
         }
 
         return service
       })
 
-      // Se não veio patch de algum vínculo, carrega do banco
+      // --- resolve ids de retorno (caso algum vínculo não tenha vindo no payload)
       let outCollaboratorIds = collaboratorIds
-      let outUnitIds = unitIds
+      let outUnitIds = unitIdsRaw
 
-      if (!hasCollaboratorsPatch || !hasUnitsPatch) {
-        const { ServiceStaff: SS2, UnitService: US2 } = await getTenantModels(groupId)
+      // garante mode atual para decidir unitIds
+      const outAttendance = normalizeAttendanceMode(updated.attendance_mode)
 
-        if (!hasCollaboratorsPatch) {
-          outCollaboratorIds = await loadCollaboratorIds(SS2, updated.id)
-        }
+      // Se não veio patch de algum vínculo, carrega do banco
+      if (!hasCollaboratorsPatch || !hasUnitsPatch || (hasAttendancePatch && outAttendance === 'client_location')) {
+        const { sequelize: sq2, ServiceStaff: SS2, UnitService: US2 } = await getTenantModels(groupId)
+        try {
+          if (!hasCollaboratorsPatch) {
+            outCollaboratorIds = await loadCollaboratorIds(SS2, updated.id)
+          }
 
-        if (!hasUnitsPatch) {
-          outUnitIds = await loadUnitIds(US2, updated.id)
+          if (outAttendance === 'client_location') {
+            outUnitIds = []
+          } else if (!hasUnitsPatch) {
+            outUnitIds = await loadUnitIds(US2, updated.id)
+          }
+        } finally {
+          await sq2.close().catch(() => {})
         }
       }
 

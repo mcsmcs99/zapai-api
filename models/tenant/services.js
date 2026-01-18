@@ -27,6 +27,13 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 'content_cut'
     },
 
+    // Tipo de atendimento aceito para este serviço
+    attendance_mode: {
+      type: DataTypes.ENUM('fixed', 'client_location', 'mixed'),
+      allowNull: false,
+      defaultValue: 'fixed'
+    },
+
     price: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
