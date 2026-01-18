@@ -31,8 +31,15 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
 
+    // Tipo de atendimento aceito para este colaborador
+    attendance_mode: {
+      type: DataTypes.ENUM('fixed', 'client_location', 'mixed'),
+      allowNull: false,
+      defaultValue: 'fixed'
+    },
+
     // JSON no formato:
-    // { mon: { closed: false, intervals: [ { start, end } ] }, ... }
+    // { mon: { closed: false, intervals: [ { start, end, unit_id } ] }, ... }
     schedule: {
       type: DataTypes.JSON,
       allowNull: false

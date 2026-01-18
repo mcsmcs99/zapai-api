@@ -54,6 +54,13 @@ function parseIds (raw) {
   return []
 }
 
+// ✅ normaliza o tipo de atendimento do colaborador
+function normalizeAttendanceMode (raw) {
+  const v = String(raw || '').trim()
+  if (v === 'fixed' || v === 'client_location' || v === 'mixed') return v
+  return 'fixed'
+}
+
 async function loadServiceIds (ServiceStaff, staffId, transaction) {
   const rows = await ServiceStaff.findAll({
     where: { staff_id: staffId },
@@ -89,16 +96,18 @@ function mapStaffOut (row, serviceIds = []) {
   const plain = row?.toJSON ? row.toJSON() : row
   return {
     ...plain,
+    attendance_mode: normalizeAttendanceMode(plain?.attendance_mode),
     serviceIds
   }
 }
 
 // --------------------------------------------------------------------------
-// NOVO: Normalização/validação de schedule com unit_id por intervalo
+// Normalização/validação de schedule com unit_id por intervalo
+// - regra: se attendance_mode === 'client_location', unit_id NÃO é obrigatório
 // --------------------------------------------------------------------------
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
-function normalizeSchedule (rawSchedule) {
+function normalizeSchedule (rawSchedule, attendanceMode = 'fixed') {
   const src = rawSchedule || {}
   const out = {}
 
@@ -112,7 +121,10 @@ function normalizeSchedule (rawSchedule) {
         intervals: v.intervals.map(it => ({
           start: it?.start ?? null,
           end: it?.end ?? null,
-          unit_id: it?.unit_id != null ? Number(it.unit_id) : null
+          // domiciliar: unit_id não faz sentido -> força null
+          unit_id: attendanceMode === 'client_location'
+            ? null
+            : (it?.unit_id != null ? Number(it.unit_id) : null)
         }))
       }
       continue
@@ -138,7 +150,10 @@ function normalizeSchedule (rawSchedule) {
 
       out[key] = {
         closed: intervals.length === 0,
-        intervals: intervals
+        intervals: intervals.map(it => ({
+          ...it,
+          unit_id: attendanceMode === 'client_location' ? null : it.unit_id
+        }))
       }
       continue
     }
@@ -152,10 +167,11 @@ function normalizeSchedule (rawSchedule) {
 
 /**
  * Valida:
- * - se closed = false, intervalos precisam ter start/end válidos e unit_id preenchido
+ * - se closed = false, intervalos precisam ter start/end válidos
+ * - unit_id obrigatório APENAS se attendanceMode !== 'client_location'
  * - sem sobreposição
  */
-function validateSchedule (schedule) {
+function validateSchedule (schedule, attendanceMode = 'fixed') {
   if (!schedule || typeof schedule !== 'object') return
 
   for (const key of DAY_KEYS) {
@@ -167,7 +183,6 @@ function validateSchedule (schedule) {
     for (const it of intervals) {
       const start = it?.start ?? null
       const end = it?.end ?? null
-      const unitId = it?.unit_id
 
       if (!start || !end || start >= end) {
         const e = new Error(`Invalid schedule interval on ${key}. Check start/end.`)
@@ -175,15 +190,20 @@ function validateSchedule (schedule) {
         throw e
       }
 
-      if (unitId == null || !Number.isFinite(Number(unitId)) || Number(unitId) <= 0) {
-        const e = new Error(`Missing unit_id on ${key} interval (${start}-${end}).`)
-        e.statusCode = 400
-        throw e
+      if (attendanceMode !== 'client_location') {
+        const unitIdNum = Number(it?.unit_id)
+        if (!Number.isFinite(unitIdNum) || unitIdNum <= 0) {
+          const e = new Error(`Missing unit_id on ${key} interval (${start}-${end}).`)
+          e.statusCode = 400
+          throw e
+        }
       }
     }
 
     // valida sobreposição
-    const sorted = [...intervals].sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')))
+    const sorted = [...intervals].sort((a, b) =>
+      String(a.start || '').localeCompare(String(b.start || ''))
+    )
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1]
       const cur = sorted[i]
@@ -312,9 +332,18 @@ module.exports = {
       const payload = req.body || {}
       const serviceIds = parseIds(payload.serviceIds || payload.service_ids)
 
-      // 🔥 normaliza/valida schedule antes de salvar
-      const schedule = payload.schedule !== undefined ? normalizeSchedule(payload.schedule) : undefined
-      if (schedule !== undefined) validateSchedule(schedule)
+      // ✅ attendance_mode (default fixed)
+      const attendance_mode = normalizeAttendanceMode(
+        payload.attendance_mode ?? payload.attendanceMode
+      )
+
+      // ✅ normaliza/valida schedule antes de salvar, condicionado ao attendance_mode
+      const schedule =
+        payload.schedule !== undefined
+          ? normalizeSchedule(payload.schedule, attendance_mode)
+          : undefined
+
+      if (schedule !== undefined) validateSchedule(schedule, attendance_mode)
 
       const { sequelize: tenantSequelize, Staff, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
@@ -326,7 +355,8 @@ module.exports = {
             name: payload.name,
             role: payload.role,
             photo_url: payload.photoUrl || payload.photo_url || null,
-            schedule: schedule !== undefined ? schedule : payload.schedule, // mantém compat
+            attendance_mode,
+            schedule: schedule !== undefined ? schedule : payload.schedule,
             status: payload.status || 'active',
             created_by: userId
           },
@@ -369,10 +399,15 @@ module.exports = {
         ? parseIds(payload.serviceIds || payload.service_ids)
         : null
 
-      // 🔥 normaliza/valida schedule (se veio no patch)
+      // ✅ attendance_mode patch
+      const hasAttendancePatch =
+        payload.attendance_mode !== undefined || payload.attendanceMode !== undefined
+      const attendance_mode = hasAttendancePatch
+        ? normalizeAttendanceMode(payload.attendance_mode ?? payload.attendanceMode)
+        : null
+
+      // schedule patch
       const hasSchedulePatch = payload.schedule !== undefined
-      const schedule = hasSchedulePatch ? normalizeSchedule(payload.schedule) : null
-      if (hasSchedulePatch) validateSchedule(schedule)
 
       const { sequelize: tenantSequelize, Staff, ServiceStaff } = await getTenantModels(groupId)
       sequelize = tenantSequelize
@@ -386,15 +421,29 @@ module.exports = {
           throw e
         }
 
+        // ✅ mode efetivo (o que vai valer após update)
+        const effectiveMode = hasAttendancePatch
+          ? attendance_mode
+          : normalizeAttendanceMode(staff.attendance_mode)
+
+        // ✅ normaliza/valida schedule condicionado ao effectiveMode
+        const schedule = hasSchedulePatch
+          ? normalizeSchedule(payload.schedule, effectiveMode)
+          : null
+
+        if (hasSchedulePatch) validateSchedule(schedule, effectiveMode)
+
         staff.name = payload.name ?? staff.name
         staff.role = payload.role ?? staff.role
         staff.photo_url = payload.photoUrl ?? payload.photo_url ?? staff.photo_url
 
+        if (hasAttendancePatch) staff.attendance_mode = attendance_mode
         if (hasSchedulePatch) staff.schedule = schedule
         if (payload.status) staff.status = payload.status
         staff.updated_by = userId
 
         await staff.save({ transaction: t })
+        await staff.reload({ transaction: t })
 
         if (hasServicesPatch) {
           await syncStaffServices(ServiceStaff, staff.id, serviceIds, t)
@@ -403,12 +452,21 @@ module.exports = {
         return staff
       })
 
-      // ✅ carrega serviceIds sem abrir nova conexão
       const outServiceIds = hasServicesPatch
         ? serviceIds
-        : await loadServiceIds(ServiceStaff, updated.id)
+        : await loadServiceIds(
+            // mesma conexão/model
+            (await getTenantModels(groupId)).ServiceStaff,
+            updated.id
+          )
 
-      return res.json(mapStaffOut(updated, outServiceIds || []))
+      // ⚠️ evita abrir conexão extra: usa o model da conexão atual
+      // então vamos recalcular corretamente aqui:
+      const finalServiceIds = hasServicesPatch
+        ? serviceIds
+        : await loadServiceIds((await getTenantModels(groupId)).ServiceStaff, updated.id)
+
+      return res.json(mapStaffOut(updated, finalServiceIds || []))
     } catch (err) {
       const statusCode = err.statusCode || 500
       console.error('Erro ao atualizar staff:', err)
